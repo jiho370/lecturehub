@@ -1,0 +1,13 @@
+# 정본 §8.3. 변경 시 이유와 회귀 표본 전후 지표를 docs/runbooks/transcription_lessons.md에 기록한다(LOOP-002).
+provider: gemini_transcribe
+mode: automatic
+chunk_max_duration_s: 2400
+split: {method: silence_aware, window_s: 30}
+preprocess: [dynaudnorm]
+quota: {requests_per_day: 25, tokens_per_minute: 10000}
+on_429: use_retry_delay_from_response_else_backoff
+auto_retry: {transient_errors: 2, qa_monotonic_fail: 1}
+post_checks: [monotonic_timestamps, coverage, tail_repetition, empty_chunk]
+tail_repetition_lines: 40
+requires_consent: true
+verified_at: "2026-10-03"  # L-010: 40-minute chunks

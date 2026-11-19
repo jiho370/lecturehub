@@ -1,0 +1,97 @@
+# Builds the installable app on a clean Windows machine and proves it starts there:
+# public export → PyInstaller → self-check of the built exe (worker and hidden window) → installer →
+# silent install, self-check of the installed copy, silent uninstall → SHA-256 → artifacts.
+# A build that fails any step is not released.
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, release]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install exactly the locked packages (version and SHA-256), then the app itself
+        run: |
+          python -m pip install --require-hashes -r requirements/release.txt
+          python -m pip install --no-deps -e .
+
+      - name: Inno Setup (pinned)
+        shell: pwsh
+        run: |
+          $setup = python tools/fetch_tools.py innosetup --cache "$env:RUNNER_TEMP\tools"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $dir = "$env:RUNNER_TEMP\innosetup"
+          Start-Process -FilePath $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER","/DIR=$dir" -Wait
+          if (-not (Test-Path "$dir\ISCC.exe")) { Write-Error "ISCC.exe not found after installing Inno Setup"; exit 1 }
+          Add-Content $env:GITHUB_ENV "LECTUREHUB_ISCC=$dir\ISCC.exe"
+
+      - name: Build (public export, exe, zip, installer)
+        shell: pwsh
+        run: python tools/build_app.py --out "$env:RUNNER_TEMP\build" --installer --cache "$env:RUNNER_TEMP\tools"
+
+      - name: Self-check of the built app (worker)
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP\build\dist\LectureHub\LectureHubWorker.exe" selfcheck --out "$env:RUNNER_TEMP\build\selfcheck-worker.json"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Self-check of the built app (hidden window)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "$env:RUNNER_TEMP\build\dist\LectureHub\LectureHub.exe" -ArgumentList "--smoke","--out","$env:RUNNER_TEMP\build\selfcheck-app.json" -Wait -PassThru
+          Get-Content "$env:RUNNER_TEMP\build\selfcheck-app.json" -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { Write-Error "LectureHub.exe --smoke failed ($($p.ExitCode))"; exit 1 }
+
+      - name: Install silently, check the installed copy, uninstall
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "$env:RUNNER_TEMP\build\LectureHub-*-setup.exe" | Select-Object -First 1
+          $dir = "$env:RUNNER_TEMP\installed"
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "setup failed ($($p.ExitCode))"; exit 1 }
+          & "$dir\LectureHubWorker.exe" selfcheck
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $u = Start-Process -FilePath "$dir\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
+          if ($u.ExitCode -ne 0) { Write-Error "uninstall failed ($($u.ExitCode))"; exit 1 }
+          Start-Sleep -Seconds 3
+          if (Test-Path "$dir\LectureHub.exe") { Write-Error "uninstall left the program behind"; exit 1 }
+
+      - name: SHA-256 of what would be released
+        shell: pwsh
+        run: |
+          Get-ChildItem "$env:RUNNER_TEMP\build\LectureHub-*" -File | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Tee-Object "$env:RUNNER_TEMP\build\SHA256SUMS.txt"
+
+      # Code signing goes here once a certificate exists (SignPath Foundation, after the public repository is up).
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LectureHub-build
+          path: |
+            ${{ runner.temp }}/build/LectureHub-*
+            ${{ runner.temp }}/build/SHA256SUMS.txt
+            ${{ runner.temp }}/build/selfcheck-*.json
+          retention-days: 14

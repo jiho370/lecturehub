@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>수업 녹음 · 미니</title>
+<link rel="stylesheet" href="app.css">
+<style>
+/* 미니 녹음 창: 녹음 버튼 · 시간 · 레벨. 시안의 토큰과 녹음 버튼을 그대로 쓴다. */
+body{overflow:hidden}
+.mini{height:100vh;display:flex;flex-direction:column;justify-content:center;gap:10px;padding:10px 14px;background:var(--panel)}
+.mrow{display:flex;align-items:center;gap:12px}
+.mini .recbtn{height:44px;padding:0 18px;font-size:14px}
+.mini .recbtn.on{padding:0 14px 0 16px}
+.mini .recbtn.confirm{background:var(--ink);box-shadow:none}
+.mtime{font-size:22px;font-weight:600}
+.mlevel{flex:1;height:6px;border-radius:999px;background:var(--chip);overflow:hidden}
+.mlevel i{display:block;height:100%;width:0;background:var(--accent);border-radius:999px;transition:width .15s}
+.mlevel.warn i{background:var(--warn)}
+.mfoot{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
+.mfoot .sp{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mfoot button{display:flex;align-items:center;gap:6px;border-radius:8px;padding:3px 6px;font-size:12px;color:var(--sub)}
+.mfoot button:hover{background:var(--panel-2);color:var(--ink)}
+.mfoot button:disabled{opacity:.4;pointer-events:none}
+.mfoot svg{width:15px;height:15px}
+.mnote{display:flex;align-items:center;gap:6px;font-size:12px;background:var(--chip);border-radius:8px;padding:5px 8px}
+.mnote[hidden],.mrow[hidden],.mnote button[hidden]{display:none}
+.mfoot .sp.warn{color:var(--rec);font-weight:600}
+.mnote .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--warn)}
+.mnote button{border-radius:6px;padding:2px 7px;font-size:12px;background:var(--panel);color:var(--ink)}
+</style>
+</head>
+<body>
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
+  <symbol id="i-mini" viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></symbol>
+</svg>
+<div class="mini">
+  <div class="mrow">
+    <button class="recbtn" id="recBtn"><svg><use href="#i-mic"/></svg><span class="label" id="label">녹음 시작</span></button>
+    <span class="mtime num" id="time">00:00:00</span>
+  </div>
+  <div class="mnote" id="note" hidden><span class="t" id="noteText"></span><button id="noteA"></button><button id="noteB"></button></div>
+  <div class="mrow" id="levelRow"><div class="mlevel" id="level"><i></i></div><span class="num" id="db" style="font-size:12px;color:var(--faint);min-width:52px;text-align:right">-∞ dB</span></div>
+  <div class="mfoot">
+    <span class="sp" id="what"></span>
+    <button id="pauseBtn" title="녹음 일시정지 / 다시 녹음" disabled>일시정지</button>
+    <button id="starBtn" title="★ 중요 표시 — 지금 시각을 표시해 두면 회차 화면에서 그 자리부터 들을 수 있습니다" disabled>★ 중요</button>
+    <button id="pinBtn" title="다른 창 위에 항상 표시">항상 위 <span class="toggle on" id="pin"></span></button>
+    <button id="bigBtn" title="큰 창으로"><svg><use href="#i-mini"/></svg>크게</button>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const fmt = (ms) => { const s = Math.floor((ms || 0) / 1000); return [Math.floor(s / 3600), Math.floor(s % 3600 / 60), s % 60].map((n) => String(n).padStart(2, "0")).join(":"); };
+  let api = null, state = {}, confirmUntil = 0, onTop = true;
+  let notices = [];      // what start() said about this recording (microphone blocked, little disk room): shown until closed
+  let noticesRunning = false;  // that recording has been seen running (see render)
+  let startFailed = "";  // why the last start did not happen: stays until the next try
+
+  /* The same words as the main window (app.js lostText / gapsText / diskText): keep the two in step
+     (tests/test_release_window.py compares them). */
+  function lostText(ms) {
+    const sec = Math.max(1, Math.floor((ms || 0) / 1000));
+    return sec < 60 ? `${sec}초` : `${Math.floor(sec / 60)}분${sec % 60 ? ` ${sec % 60}초` : ""}`;
+  }
+  function gapsText(rec) {
+    const tail = rec.tail_lost_ms !== null && rec.tail_lost_ms !== undefined;
+    const mid = (rec.gaps || 0) - (tail ? 1 : 0), midLost = (rec.lost_ms || 0) - (tail ? rec.tail_lost_ms : 0);
+    let text = mid > 0 ? ` · 중간에 끊김 ${mid}번(${lostText(midLost)} 빠짐)` : "";
+    if (tail) text += rec.cause === "source_lost" ? ` · 장치가 돌아오지 않아 여기까지 저장(마지막 ${lostText(rec.tail_lost_ms)} 빠짐)` : ` · 끝날 때까지 소리가 돌아오지 않음(마지막 ${lostText(rec.tail_lost_ms)} 빠짐)`;
+    else if (rec.cause === "source_lost") text += " · 장치가 돌아오지 않아 여기까지 저장";
+    return text;
+  }
+  function diskText(minutes) {
+    if (typeof minutes !== "number" || !Number.isFinite(minutes)) return "디스크 공간 부족 — 파일을 지워 주세요";
+    if (minutes <= 0) return "디스크 공간 부족 — 지금까지 녹음한 것도 끝까지 저장할 공간이 모자랍니다. 파일을 지워 주세요";
+    return `디스크 공간 부족 — 끝까지 저장할 수 있는 녹음은 약 ${Math.floor(minutes)}분 남았습니다. 파일을 지워 주세요`;
+  }
+  const noSound = (mode) => mode === "loopback" ? "PC 소리가" : "마이크 소리가";
+
+  /* The one-line card above the foot (it takes the place of the level bar), most urgent first: sound lost right
+     now, the two questions with buttons, what start() said, low disk, and after the end what was lost.
+     {text, title, a: [label, action] | null, b: [label, action] | null} or null */
+  function noteFor(st) {
+    const phase = st.phase, s = st.status || {}, live = phase === "recording";
+    const two = live && st.pc && st.pc.state === "recording" ? st.pc.status || {} : null;  // the second engine
+    if (live && (s.stalled || (two && two.stalled))) {
+      const who = s.stalled ? (two ? noSound(s.mode) : "소리가") : noSound(st.pc.mode || "loopback");
+      return { text: `${who} 들어오지 않습니다 — 장치를 다시 여는 중`, title: "이어폰·마이크 연결을 확인하세요. 소리가 다시 들어오면 이어서 녹음합니다." };
+    }
+    const nxt = live && st.next_class, over = live && st.class_over;
+    if (nxt) return { text: `다음 수업 ${nxt.course}(${nxt.start})로 바꿀까요?`, a: ["바꾸기", "switch"], b: ["계속", "keep"] };
+    if (over) {
+      const auto = over.auto_stop_at_ms ? ` · ${new Date(over.auto_stop_at_ms).toTimeString().slice(0, 5)} 자동 정지` : "";
+      return { text: (over.kind === "paused" ? "아직 일시정지 중" : "수업 끝난 듯") + auto, title: over.reason + auto,
+        a: over.kind === "paused" ? ["다시 녹음", "resume"] : ["멈추기", "stop"], b: ["계속", "snooze"] };
+    }
+    const said = (live || phase === "starting") && notices[0];
+    if (said && said.kind === "mic_blocked") return { text: "Windows에서 마이크가 꺼져 있어요", title: said.text, a: ["설정 열기", "mic-settings"], b: ["닫기", "dismiss"] };
+    if (said) return { text: said.kind === "disk_low" ? "디스크 공간이 얼마 남지 않았어요" : said.text, title: said.text, b: ["닫기", "dismiss"] };
+    if (live && st.disk && st.disk.low) {  // the card is narrow: a short line, the whole sentence on hover
+      const m = st.disk.minutes, known = typeof m === "number" && Number.isFinite(m);
+      const text = !known ? "디스크 공간 부족 — 파일을 지워 주세요" : m <= 0 ? "디스크 부족 · 지금까지 녹음도 저장 공간 모자람" : `디스크 부족 · 끝까지 저장 가능 약 ${Math.floor(m)}분`;
+      return { text, title: diskText(m) };
+    }
+    if (phase === "done" && st.summary && !st.summary.discarded) {
+      const pc = st.pc || {}, mine = gapsText(st.summary), theirs = gapsText(pc);
+      const lost = mine + (theirs ? ` · ${pc.mode === "mic" ? "마이크" : "PC 소리"} 쪽${theirs.replace(/^ · /, " ")}` : "");
+      if (lost) return { text: "저장됨" + lost };
+    }
+    return null;
+  }
+
+  function render() {
+    const phase = state.phase, s = state.status || {}, live = phase === "recording";
+    const btn = $("recBtn"), arming = live && Date.now() < confirmUntil;
+    btn.classList.toggle("on", live || phase === "stopping");
+    btn.classList.toggle("confirm", arming);
+    btn.classList.toggle("busy", ["starting", "stopping", "finalizing"].includes(phase));
+    $("label").textContent = arming ? "한 번 더 눌러 끝내기" : live ? "끝내기" : phase === "starting" ? "시작 중…" : phase === "stopping" || phase === "finalizing" ? "저장 중…" : "녹음 시작";
+    const ms = live || phase === "stopping" ? s.elapsed_ms : (state.summary && state.summary.total_ms) || 0;
+    const paused = live && !!s.paused;
+    $("time").textContent = (paused ? "⏸ " : "") + fmt(ms);
+    $("pauseBtn").disabled = !live;
+    $("starBtn").disabled = !live;
+    $("pauseBtn").textContent = paused ? "다시 녹음" : "일시정지";
+    const rms = live && !s.paused ? s.rms : null, v = rms === null || rms === undefined ? 0 : Math.max(0, Math.min(1, (rms + 70) / 55));
+    $("level").firstElementChild.style.width = (v * 100).toFixed(0) + "%";
+    const two = live && state.pc && state.pc.state === "recording" ? state.pc.status || {} : null;
+    const stalled = live && !!(s.stalled || (two && two.stalled)), diskLow = live && !!(state.disk && state.disk.low);
+    $("level").classList.toggle("warn", !!(live && (s.quiet || stalled)));
+    $("db").textContent = live ? (rms === null || rms === undefined ? "-∞" : Math.round(rms)) + " dB" : "";
+    // what start() said belongs to that recording: dropped once it was seen running and then is no longer. (A state
+    // read before the start can still arrive after it, so "not running" alone proves nothing.)
+    if (notices.length && (live || phase === "starting")) noticesRunning = true;
+    else if (notices.length && noticesRunning) { notices = []; noticesRunning = false; }
+    const note = noteFor(state);
+    $("note").hidden = !note; $("levelRow").hidden = !!note;
+    if (note) {
+      $("noteText").textContent = note.text; $("noteText").title = note.title || note.text;
+      [["noteA", note.a], ["noteB", note.b]].forEach(([id, button]) => {
+        $(id).hidden = !button;
+        if (button) { $(id).textContent = button[0]; $(id).dataset.a = button[1]; }
+      });
+    }
+    // the foot line is short (four buttons share the row): the card above carries the sentence, this is the state
+    const course = (s.course !== undefined ? s.course : null);
+    const what = live ? (stalled ? "소리 끊김" : diskLow ? "디스크 공간 부족" : s.quiet ? "소리 매우 작음" : (course || "과목 미지정") + " · 녹음 중")
+      : phase === "done" ? "저장됨 · 누락 " + ((state.summary && state.summary.dropped_samples) || 0)
+      : phase === "error" ? (state.error || "오류") : startFailed;
+    $("what").textContent = what; $("what").title = what;
+    $("what").classList.toggle("warn", stalled || diskLow);
+  }
+
+  async function onRec() {
+    const phase = state.phase;
+    if (phase === "recording") {
+      if (Date.now() < confirmUntil) { confirmUntil = 0; await api.stop(); } else { confirmUntil = Date.now() + 3000; }
+      render(); return;
+    }
+    if (["starting", "stopping", "finalizing"].includes(phase)) return;
+    startFailed = ""; notices = []; noticesRunning = false;
+    const r = await api.start_selected();
+    if (r.ok) notices = r.notices || [];  // said, never a stop: the recording is already running
+    else startFailed = r.reason || "시작하지 못했습니다";
+    render();
+  }
+
+  // One poll chain at a time. start() can run again in the same page (pywebview announces its bridge again after
+  // a refused navigation, and a call that was out then never answers): each start begins a new chain and an older
+  // one stops at its next turn.
+  let chain = 0;
+  async function poll(mine) {
+    try { state = await api.state(); render(); } catch (e) { /* keep polling */ }
+    if (mine === chain) setTimeout(() => poll(mine), 250);
+  }
+
+  function start() {
+    api = window.pywebview.api;
+    $("recBtn").onclick = onRec;
+    $("bigBtn").onclick = () => api.show_main();
+    const noteAct = async (a) => {
+      if (a === "dismiss" || a === "mic-settings") {  // a notice from start(): closed here, the recording goes on
+        const said = notices.shift(); render();
+        if (a === "mic-settings") {  // Windows Settings could not be opened: say that in the same card
+          const r = await api.open_mic_settings();
+          if (r && !r.ok) { notices.unshift({ kind: "said", text: `${r.error || "Windows 설정을 열지 못했습니다"} — ${said ? said.text : ""}` }); render(); }
+        }
+        return null;
+      }
+      if (a === "switch" || a === "keep") return api.next_class_answer(a);
+      if (a === "resume") { await api.pause(false); return api.class_over_answer("snooze"); }
+      return api.class_over_answer(a);
+    };
+    $("noteA").onclick = () => noteAct($("noteA").dataset.a);
+    $("noteB").onclick = () => noteAct($("noteB").dataset.a);
+    $("pauseBtn").onclick = () => { if (state.phase === "recording") api.pause(!(state.status && state.status.paused)); };
+    $("starBtn").onclick = async () => { const r = await api.bookmark(); if (r && r.ok) { const b = $("starBtn"); b.textContent = "★ 표시함"; setTimeout(() => { b.textContent = "★ 중요"; }, 1500); } };
+    $("pinBtn").onclick = async () => { onTop = !onTop; $("pin").classList.toggle("on", onTop); await api.set_on_top(onTop); };
+    poll(++chain);
+  }
+  if (window.pywebview && window.pywebview.api) start(); else window.addEventListener("pywebviewready", start);
+})();
+</script>
+</body>
+</html>

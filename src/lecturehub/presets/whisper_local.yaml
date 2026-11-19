@@ -1,0 +1,11 @@
+# 정본 §8.3. model은 [미정] — D2 속도·용어 적중률 측정 후 결정(D-029)
+provider: whisper_local
+mode: automatic
+engine: faster-whisper
+model: null
+compute: {cuda: float16, cpu: int8}
+language: ko
+run_policy: after_recording_low_priority
+never_during_recording: true
+role_default: reference
+requires_consent: false

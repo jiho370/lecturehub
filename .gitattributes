@@ -1,0 +1,2 @@
+# Synthetic parser fixtures must retain BOM and line endings on every platform.
+tests/fixtures/** -text -filter

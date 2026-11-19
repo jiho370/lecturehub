@@ -1,0 +1,63 @@
+# Every push: the full test suite on a clean Windows machine (not the developer's PC).
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the locked packages a release is built from, the app, and the test tools
+        run: |
+          python -m pip install --require-hashes -r requirements/release.txt
+          python -m pip install --no-deps -e .
+          python -m pip install "pytest>=8" "ruff>=0.5" "pymupdf>=1.24"
+
+      - name: ffmpeg (the pinned build the app ships)
+        shell: pwsh
+        run: |
+          $folder = python tools/fetch_tools.py ffmpeg --cache "$env:RUNNER_TEMP\tools"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Add-Content $env:GITHUB_PATH $folder
+
+      - name: Lint (errors only)
+        run: python -m ruff check src tests tools packaging --select E9,F
+
+      - name: Tests
+        run: python -m pytest -q
+
+      # The public repository is an export of this one with some features taken out, and it runs this same workflow
+      # on its own files. Its tree is tested here too, so a test that only holds in the full edition is found before
+      # the export is published (2026-11-19: 15 such tests were found only after the first push there).
+      # In the public repository itself the export tool does not exist and this step is skipped.
+      - name: The public edition's tree passes its own tests
+        if: hashFiles('tools/export_public.py') != ''
+        shell: pwsh
+        run: |
+          python tools/export_public.py "$env:RUNNER_TEMP\public"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Push-Location "$env:RUNNER_TEMP\public"
+          python -m pytest -q -p no:cacheprovider
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code

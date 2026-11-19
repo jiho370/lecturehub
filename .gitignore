@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+/work/
+# 실제 강의 데이터·녹음·전사본은 절대 커밋하지 않는다
+*.m4a
+*.mp3
+*.wav
+*.flac
+*.sqlite
+*.db
+_lecturehub/
+local/
+.env

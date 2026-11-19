@@ -1,0 +1,73 @@
+# PyInstaller spec: one folder with LectureHub.exe (window) and LectureHubWorker.exe (background jobs).
+# Built by tools/build_app.py from the PUBLIC export (its src comes first on the path: SRC env var).
+import os
+from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+SRC = os.environ["LECTUREHUB_BUILD_SRC"]
+HERE = Path(SPECPATH)
+ICON = str(Path(SRC) / "lecturehub" / "ui" / "assets" / "app.ico")
+
+# Walk the PUBLIC export itself: collect_submodules/collect_data_files("lecturehub") would ask the package installed
+# in the building venv (the full, private tree in a dev checkout) instead.
+PKG = Path(SRC) / "lecturehub"
+SKIP = {"__pycache__"}
+
+
+def _public_modules():
+    for path in PKG.rglob("*.py"):
+        if SKIP & set(path.parts):
+            continue
+        parts = path.relative_to(SRC).with_suffix("").parts
+        yield ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+
+
+def _public_data():
+    for path in PKG.rglob("*"):
+        if path.is_file() and path.suffix not in {".py", ".pyc"} and not SKIP & set(path.parts):
+            yield str(path), str(path.parent.relative_to(SRC))
+
+
+hidden = sorted(_public_modules()) + collect_submodules("webview") + ["clr"]
+datas = list(_public_data()) + collect_data_files("webview")
+
+
+def analysis(script):
+    return Analysis([str(HERE / script)], pathex=[SRC], datas=datas, hiddenimports=hidden,
+                    # pymupdf/fitz: AGPL, dev-only (test PDFs). Never in the MIT app, even when the build venv has it.
+                    excludes=["tkinter", "matplotlib", "IPython", "pytest", "pymupdf", "fitz"], noarchive=False)
+
+
+VERSION = os.environ.get("LECTUREHUB_BUILD_VERSION", "0.0.0")
+
+
+def version_file(name, description):
+    """The version shown in the exe's Properties > Details (and read by Windows and installers)."""
+    from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+                                                     VarFileInfo, VarStruct, VSVersionInfo)
+
+    numbers = tuple(int(part) for part in VERSION.split(".")[:3]) + (0,)
+    info = VSVersionInfo(
+        ffi=FixedFileInfo(filevers=numbers, prodvers=numbers),
+        kids=[StringFileInfo([StringTable("040904B0", [
+            StringStruct("CompanyName", "Lecture Hub contributors"), StringStruct("FileDescription", description),
+            StringStruct("FileVersion", VERSION), StringStruct("InternalName", name),
+            StringStruct("OriginalFilename", name + ".exe"), StringStruct("ProductName", "Lecture Hub"),
+            StringStruct("ProductVersion", VERSION), StringStruct("LegalCopyright", "MIT License")])]),
+            VarFileInfo([VarStruct("Translation", [1033, 1200])])])
+    path = Path(workpath) / f"version_{name}.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(info), encoding="utf-8")
+    return str(path)
+
+
+app = analysis("launcher_app.py")
+worker = analysis("launcher_worker.py")
+
+app_exe = EXE(PYZ(app.pure), app.scripts, [], exclude_binaries=True, name="LectureHub", console=False, icon=ICON,
+              version=version_file("LectureHub", "Lecture Hub"))
+worker_exe = EXE(PYZ(worker.pure), worker.scripts, [], exclude_binaries=True, name="LectureHubWorker",
+                 console=True, icon=ICON, version=version_file("LectureHubWorker", "Lecture Hub background helper"))
+
+COLLECT(app_exe, app.binaries, app.datas, worker_exe, worker.binaries, worker.datas, name="LectureHub")

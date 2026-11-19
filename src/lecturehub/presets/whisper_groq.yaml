@@ -1,0 +1,22 @@
+# D-061(사용자 결정 2026-09-29): Whisper는 로컬 대신 Groq API로 돌린다(노트북 부하 0, 무료 티어 하루 8시간).
+# 변경 시 이유와 전후 지표를 docs/runbooks/transcription_lessons.md에 기록한다(LOOP-002).
+provider: whisper_groq
+mode: automatic
+engine: whisper
+model: whisper-large-v3          # turbo보다 한국어 정확도 우선(속도·비용 차이는 무료 티어에서 무의미)
+language: ko
+format: mp3
+bitrate: 48k
+sample_rate: 16000
+channels: 1
+max_file_bytes: 25000000          # 무료 티어 파일당 한도
+chunk_max_duration_s: 1800
+split: {method: silence_aware, window_s: 30}
+# Groq 무료 티어: 20 RPM, 2,000 RPD, 오디오 7,200초/시간·28,800초/일. 시간·일 한도는 429의 대기 시간을 따른다.
+quota: {requests_per_day: 2000}
+auto_retry: {transient_errors: 2, qa_monotonic_fail: 1}
+post_checks: [monotonic_timestamps, coverage, tail_repetition, empty_chunk, no_speech, hallucination_phrases]
+tail_repetition_lines: 40
+role_default: reference
+requires_consent: true            # 녹음이 외부(Groq)로 나간다
+verified_at: "2026-09-29"

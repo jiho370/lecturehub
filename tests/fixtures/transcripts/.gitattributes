@@ -1,0 +1,2 @@
+# Engine detection depends on exact BOM/newline bytes on every platform.
+*.txt -text -whitespace

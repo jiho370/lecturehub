@@ -1,0 +1,14 @@
+# 정본 §8.3, §8.6, §8.6a
+provider: mai_playground
+mode: agent_assisted   # 실패 시 semi_manual
+format: mp3
+bitrate: 40k
+sample_rate: 16000
+channels: 1
+max_file_bytes: 10000000
+chunk_max_duration_s: 1800
+# 2026-09-29 L-006: 2회 결과가 3조각 모두 바이트 동일 → 사용자 결정으로 1회(D-064). 조기 종료는 Google·Whisper와 비교해 본다
+runs_per_chunk: {default: 1}
+post_checks: [coverage_early_stop, speaker_label_strip, monotonic_timestamps]
+requires_consent: true
+verified_at: "2026-09-29"
