@@ -2,7 +2,16 @@
 
 Windows 10(1809 이상) 또는 Windows 11, 64비트가 필요합니다.
 
-## 1. 설치 프로그램으로 설치 (권장)
+## 1. Microsoft Store에서 설치 (권장)
+
+1. https://apps.microsoft.com/detail/9NSZ9V0H0FBR 를 열거나, Microsoft Store 앱에서 "Lecture Hub"를 찾습니다.
+2. **받기**(또는 **설치**)를 누릅니다. 경고 창 없이 설치됩니다. Store판은 Microsoft가 서명합니다.
+3. 시작 메뉴의 **Lecture Hub**로 엽니다.
+
+새 버전은 Store가 받으므로 앱 안의 새 버전 알림은 꺼져 있습니다. Store판을 제거하면 앱 설정과 앱 기록도 함께 지워지지만, 학기 폴더(녹음·전사·노트)는 그대로 남습니다.
+Store판과 아래 설치 프로그램판을 함께 설치할 필요는 없습니다. 하나만 쓰세요.
+
+## 1-1. 설치 프로그램으로 설치 (Store를 쓸 수 없을 때)
 
 1. 릴리스 페이지에서 `LectureHub-<버전>-win64-setup.exe`를 받습니다.
 2. 받은 파일을 실행합니다. 관리자 권한은 필요 없고, 내 계정 폴더(`%LOCALAPPDATA%\Programs\LectureHub`)에 설치됩니다.
@@ -47,7 +56,7 @@ Get-FileHash .\LectureHub-<버전>-win64-setup.exe -Algorithm SHA256
 
 - Gemini 키: Google AI Studio에서 만듭니다. 연결 버튼을 누르면 키가 맞는지 확인한 뒤 저장합니다.
 - Groq 키: Groq 콘솔에서 만듭니다.
-- eTL 토큰: eTL 계정 설정의 "새 액세스 토큰"에서 만듭니다(서울대 eTL 전용).
+- eTL 토큰: eTL 계정 설정의 "새 액세스 토큰"에서 만듭니다. 다른 학교 Canvas를 쓰면 먼저 설정 → 계정 연결의 [다른 학교 Canvas]에 학교 Canvas 주소(https)를 넣고, 그 학교 Canvas의 계정 → 설정에서 토큰을 만듭니다. 토큰은 넣을 때의 주소에만 보내고, 주소를 바꾸면 다시 넣어야 합니다.
 
 키는 이 PC의 Windows 자격 증명 관리자에만 저장되고, 앱 화면이나 파일로 다시 나오지 않습니다.
 

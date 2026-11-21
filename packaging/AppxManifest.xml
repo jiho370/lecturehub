@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Microsoft Store package of the public edition. tools/build_msix.py fills the dollar-brace values; the identity comes
+     from Partner Center (Product identity) and must match it exactly, or the Store refuses the upload. -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 desktop rescap">
+
+  <Identity Name="${name}" Publisher="${publisher}" Version="${version}" ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>${display_name}</DisplayName>
+    <PublisherDisplayName>${publisher_display_name}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="ko-KR" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application Id="LectureHub" Executable="LectureHub.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="${display_name}" Description="수업 녹음, 전사, 근거가 달린 강의 정리본"
+                          BackgroundColor="transparent"
+                          Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- One alias only (an Application may declare appExecutionAlias once, and a second Application hidden from
+             Start is a "headless app", which the Store refuses without a waiver). It is for the background helper:
+             a console (the note helper, a check) runs "LectureHubWorker.exe" from PATH inside the package, so it sees
+             the same settings and data as the window. The window itself starts from the Start menu. -->
+        <uap3:Extension Category="windows.appExecutionAlias" Executable="LectureHubWorker.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="LectureHubWorker.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="microphone" />
+  </Capabilities>
+</Package>

@@ -130,7 +130,8 @@ def candidates(connection: sqlite3.Connection) -> list[dict]:
     items = [_row_dict(connection, row, columns) for row in cursor.fetchall()]
     for item in items:
         evidence = connection.execute(
-            "SELECT detail FROM Evidence WHERE subject_type='CalendarEvent' AND subject_id=? AND kind='transcript_quote' "
+            "SELECT detail FROM Evidence WHERE subject_type='CalendarEvent' AND subject_id=? "
+            "AND kind IN ('transcript_quote','board_quote') "
             "ORDER BY created_at LIMIT 1", (item["id"],)).fetchone()
         item["evidence"] = json.loads(evidence[0]) if evidence else None
     return items

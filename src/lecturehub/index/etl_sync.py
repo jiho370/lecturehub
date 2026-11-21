@@ -23,9 +23,10 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from lecturehub.core import etl_site
 from lecturehub.core.textio import read_text_any
 
-BASE = "https://myetl.snu.ac.kr"
+BASE = etl_site.DEFAULT  # SNU's eTL; the site in use is etl_site.base() (another school's Canvas, 2026-11-20)
 KEYRING_SERVICE, KEYRING_NAME = "lecturehub", "etl-canvas"
 MIN_INTERVAL_S = 3 * 3600
 KST = timezone(timedelta(hours=9))  # Korea has no daylight saving time
@@ -35,11 +36,13 @@ Fetch = Callable[[str, str], tuple[object, str | None]]  # (url, token) -> (json
 
 
 def load_token() -> str | None:
+    """The saved token, only while it belongs to the site in use (a token made for one school never goes to
+    another school's address after the user changes it)."""
     try:
         import keyring
 
         token = keyring.get_password(KEYRING_SERVICE, KEYRING_NAME)
-        if token:
+        if token and etl_site.token_fits():
             return token
     except Exception:  # noqa: BLE001, S110 - a broken keyring backend means "not connected"
         pass
@@ -51,6 +54,7 @@ def save_token(token: str | None) -> None:
 
     if token:
         keyring.set_password(KEYRING_SERVICE, KEYRING_NAME, token.strip())
+        etl_site.remember_token_site()
     else:
         try:
             keyring.delete_password(KEYRING_SERVICE, KEYRING_NAME)
@@ -59,10 +63,10 @@ def save_token(token: str | None) -> None:
 
 
 def _same_host(url: str) -> bool:
-    """https on BASE's own host: the only place the eTL token may go (security review 2026-11-05)."""
+    """https on the eTL site's own host: the only place the eTL token may go (security review 2026-11-05)."""
     from urllib.parse import urlsplit
 
-    target, base = urlsplit(url), urlsplit(BASE)
+    target, base = urlsplit(url), urlsplit(etl_site.base())
     return target.scheme == "https" and target.hostname == base.hostname and target.port == base.port
 
 
@@ -118,20 +122,35 @@ def term_prefix(root: Path) -> str:
     return f"{year}-{found[2]}"
 
 
+def match_subject(course_name: str, subjects: dict[str, str]) -> str | None:
+    """The folder of the timetable subject this course name is, or contains (the longest such subject).
+    Other schools' Canvas sites name courses like "[2026-2] 도시계획론-01" or "도시계획론 (Urban Planning)"."""
+    if course_name in subjects:
+        return subjects[course_name]
+    squeezed = "".join(course_name.split())
+    inside = [s for s in subjects if len("".join(s.split())) >= 2 and "".join(s.split()) in squeezed]
+    return subjects[max(inside, key=len)] if inside else None
+
+
 def fetch_assignments(root: Path, token: str, fetch: Fetch = _http) -> dict:
     prefix, subjects = term_prefix(root), timetable(root)
     items, unmatched, courses = [], [], 0
-    for course in _all(fetch, f"{BASE}/api/v1/courses?enrollment_state=active&per_page=100", token):
+    site = etl_site.base()
+    for course in _all(fetch, f"{site}/api/v1/courses?enrollment_state=active&per_page=100", token):
         name = str(course.get("name") or "")
-        if not name.startswith(prefix + " "):
-            continue
-        subject = _SECTION.sub("", name[len(prefix) + 1:]).strip()
-        folder = subjects.get(subject)
+        if name.startswith(prefix + " "):
+            subject = _SECTION.sub("", name[len(prefix) + 1:]).strip()
+            folder = subjects.get(subject)
+        elif etl_site.is_default():
+            continue  # SNU's eTL: another term's course
+        else:  # another school's Canvas names courses its own way: find a timetable subject inside the name
+            subject = _SECTION.sub("", name).strip()
+            folder = match_subject(subject, subjects)
         if folder is None:
             unmatched.append(subject)
             continue
         courses += 1
-        for item in _all(fetch, f"{BASE}/api/v1/courses/{course['id']}/assignments?per_page=100&order_by=due_at", token):
+        for item in _all(fetch, f"{site}/api/v1/courses/{course['id']}/assignments?per_page=100&order_by=due_at", token):
             if not item.get("published", True) or not item.get("due_at"):
                 continue
             due = datetime.fromisoformat(str(item["due_at"])).astimezone(KST)

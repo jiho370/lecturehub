@@ -38,8 +38,10 @@ def _set_app_id() -> None:
     if sys.platform == "win32":
         import ctypes
 
-        from lecturehub.core import edition
+        from lecturehub.core import edition, package
 
+        if package.packaged():  # the Store package gives the window its identity (tile, taskbar, pin)
+            return
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID_PUBLIC if edition.name() == "public" else APP_ID)
 
 
@@ -241,7 +243,9 @@ class Api:
             return {"ok": False, "error": "열 수 있는 폴더가 아닙니다."}
         if not target.is_dir():
             return {"ok": False, "error": "폴더가 아직 없습니다."}
-        subprocess.Popen(["explorer", str(target)])
+        from lecturehub.core import package
+
+        subprocess.Popen(["explorer", str(package.real_path(target))])  # Store build: Explorer sees the redirected copy
         return {"ok": True}
 
     # new-version notice (core/update.py): one daily request for the latest version number, nothing is installed
@@ -297,7 +301,9 @@ class Api:
         except OSError as exc:
             applog.swallowed("문제 보고 파일 만들기")
             return {"ok": False, "error": f"문제 보고 파일을 만들지 못했습니다: {exc}"}
-        subprocess.Popen(["explorer", "/select,", str(target)])
+        from lecturehub.core import package
+
+        subprocess.Popen(["explorer", "/select,", str(package.real_path(target))])
         return {"ok": True, "path": str(target), "name": target.name}
 
     def conn_save_unchecked(self, provider, key):
@@ -309,11 +315,14 @@ class Api:
     def conn_remove(self, provider):
         return self._backend.conn_remove(str(provider))
 
+    def conn_etl_site(self, address=None):
+        return self._backend.conn_etl_site(None if address is None else str(address))
+
     def conn_open_help(self, provider):
         """Open the page that explains how to get a key / install a tool (only our own list of addresses)."""
         from lecturehub.core import connections, tools
 
-        url = (connections.PROVIDERS.get(provider) or tools.TOOLS.get(provider) or {}).get("help_url")
+        url = (connections.meta_for(provider) if provider in connections.PROVIDERS else tools.TOOLS.get(provider) or {}).get("help_url")
         if not url:
             return {"ok": False, "error": "안내 페이지가 없습니다."}
         import webbrowser
@@ -880,6 +889,7 @@ class Api:
             if not self._busy() and hasattr(self._library, "calendar_refresh"):
                 refreshed = self._library.calendar_refresh()  # eTL deadlines + notices heard in class (candidates)
                 self._announce((refreshed or {}).get("notices"))
+                self._tell_board((refreshed or {}).get("board_new"))
             if not self._busy() and hasattr(self._library, "audio_cleanup"):
                 self._library.audio_cleanup()  # recordings whose Google transcript is N days old → Recycle Bin
             if not self._busy() and hasattr(self._library, "prewarm"):
@@ -928,8 +938,36 @@ class Api:
         except Exception:  # noqa: BLE001 - the page polls the inbox as well
             applog.swallowed("수업 공지 화면 갱신")
 
+    def _tell_board(self, posts):
+        """New eTL board posts, with or without files (user 2026-11-20): what was posted, by a Windows
+        notification, and the page's banner (it shows the text until 확인함)."""
+        if not posts:
+            return
+        def line(post):
+            text = " ".join(str(post.get("text") or "").split())
+            return f"{post['course']} · {post['title']}" + (f" — {text[:60]}" if text else "")
+        try:
+            from .notify import toast
+
+            toast(f"eTL 게시판 새 글 {len(posts)}건", "\n".join(line(p) for p in posts[:3]),
+                  icon=str(ICON) if ICON.exists() else None)
+        except Exception:  # noqa: BLE001 - the banner below still shows it
+            applog.swallowed("게시판 새 글 Windows 알림")
+        try:
+            if self._main is not None:
+                self._main.evaluate_js("window.__lecturehubNotices && window.__lecturehubNotices()")
+        except Exception:  # noqa: BLE001 - the page reads the list when it opens
+            applog.swallowed("게시판 새 글 화면 갱신")
+
+    def etl_board_new(self):
+        return self._library.etl_board_new()
+
+    def etl_board_seen(self, ids):
+        return self._library.etl_board_seen(list(ids or []))
+
     def _notice_loop(self, every_seconds=600):
-        """Every 10 minutes: read lectures whose transcripts changed (network only, so it runs while recording)."""
+        """Every 10 minutes: read lectures whose transcripts changed (network only, so it runs while recording),
+        and once a day the eTL course boards (not while recording, AGENTS §2.7)."""
         import time
 
         time.sleep(30)  # after start-up (the calendar refresh reads once too)
@@ -938,6 +976,11 @@ class Api:
                 self._announce(self._library.notices_scan(_now().date()))
             except Exception:  # noqa: BLE001 - tried again next round
                 applog.swallowed("수업 공지 읽기")
+            try:
+                if not self._busy() and hasattr(self._library, "etl_board_auto"):
+                    self._tell_board(self._library.etl_board_auto())
+            except Exception:  # noqa: BLE001 - tried again next round
+                applog.swallowed("게시판 읽기")
             time.sleep(every_seconds)
 
     def _clova_loop(self, every_seconds=3600):
@@ -1017,6 +1060,11 @@ class Api:
 
     def etl_board(self):
         return self._library.etl_board()
+
+    def etl_board_check(self):
+        if self._busy():  # network next to a recording: wait (AGENTS §2.7)
+            return {"ok": False, "error": "녹음 중에는 게시판을 읽지 않습니다. 녹음이 끝난 뒤 다시 누르세요."}
+        return self._library.etl_board_check()
 
     def etl_file_take(self, file_id, beside=False, allow_big=False):
         if self._busy():  # a download next to a recording: wait (AGENTS §2.7)

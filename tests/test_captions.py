@@ -58,6 +58,42 @@ def test_CAP_002_any_device_format_becomes_16k_mono():
     assert abs(np.argmax(spectrum) * RATE / len(out) - 440) < 5
 
 
+def level_db(audio):
+    x = np.frombuffer(audio, dtype=np.int16).astype(np.float32) if isinstance(audio, bytes) else audio.astype(np.float32)
+    return 20 * np.log10(np.sqrt(np.mean(x ** 2)) / 32768)
+
+
+def test_CAP_010_quiet_room_is_raised_before_sending_loud_speech_is_left_alone():
+    gain = captions.AutoGain()
+    quiet = [gain(p) for p in pieces(tone(8, amp=110))]          # about -52 dB, like a real class 2026-11-20
+    assert level_db(tone(1, amp=110)) < -50
+    assert -30 <= level_db(b"".join(quiet[-10:])) <= -24 and gain.gain_db <= captions.MAX_GAIN_DB
+    loud = captions.AutoGain()
+    out = [loud(p) for p in pieces(tone(8, amp=8000))]
+    assert out[-1] == pieces(tone(8, amp=8000))[-1] and loud.gain_db == 0.0
+
+
+def test_CAP_010_the_gain_never_clips_and_a_muted_mic_stays_silent():
+    gain = captions.AutoGain()
+    for p in pieces(tone(6, amp=110)):
+        gain(p)
+    shout = gain(pieces(tone(1, amp=12000))[0])                   # a sudden loud word at full gain
+    assert np.max(np.abs(np.frombuffer(shout, dtype=np.int16))) <= captions.LIMIT
+    muted = captions.AutoGain()
+    assert all(muted(p) == p for p in pieces(silence(6)))
+
+
+def test_CAP_010_run_sends_the_raised_sound_and_says_how_much(tmp_path):
+    sent = []
+    pcm = tmp_path / "합성.pcm"
+    pcm.write_bytes(np.concatenate([tone(18, amp=110), silence(0.6), tone(3, amp=110)]).tobytes())
+    captions.run(tmp_path, "합성 과목", source=lambda out, stop: captions.file_source(pcm, out, stop, pace=0),
+                 recognize=lambda chunk: sent.append(chunk) or "합성", gemini_key=None)
+    assert level_db(sent[0][-RATE * 2 * 5:]) > -32                 # the last seconds of the first piece, raised
+    live = json.loads((tmp_path / "_lecturehub" / "captions" / "live.json").read_text(encoding="utf-8"))
+    assert live["gain_db"] >= 18
+
+
 class FakeQuick:
     def __init__(self, key, on_event, on_error):
         self.on_event, self.fed = on_event, 0

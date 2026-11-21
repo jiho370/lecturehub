@@ -78,6 +78,65 @@ jobs:
           Start-Sleep -Seconds 3
           if (Test-Path "$dir\LectureHub.exe") { Write-Error "uninstall left the program behind"; exit 1 }
 
+      - name: Microsoft Store package (MSIX), installed and checked on this runner
+        # A test identity is signed with a throw-away certificate that only this runner trusts, installed, and run
+        # inside the package (window self-check + worker self-check). The upload copy uses the Partner Center
+        # identity from the repository variables and stays unsigned: the Store signs it after certification.
+        shell: pwsh
+        env:
+          STORE_NAME: ${{ vars.MSIX_NAME }}
+          STORE_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          STORE_PUBLISHER_DISPLAY: ${{ vars.MSIX_PUBLISHER_DISPLAY }}
+        run: |
+          $app = "$env:RUNNER_TEMP\build\dist\LectureHub"
+          $test = "$env:RUNNER_TEMP\msix-test"
+          python tools/build_msix.py --app $app --out $test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $msix = Get-ChildItem "$test\*.msix" | Select-Object -First 1
+          $kit = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          $cert = New-SelfSignedCertificate -Type Custom -Subject "CN=LectureHubTest" -KeyUsage DigitalSignature `
+            -CertStoreLocation Cert:\CurrentUser\My -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+          $plain = [guid]::NewGuid().ToString()  # throw-away: the certificate dies with this runner
+          Export-PfxCertificate -Cert $cert -FilePath "$test\test.pfx" -Password (ConvertTo-SecureString $plain -AsPlainText -Force) | Out-Null
+          Export-Certificate -Cert $cert -FilePath "$test\test.cer" | Out-Null
+          Import-Certificate -FilePath "$test\test.cer" -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+          & $kit.FullName sign /fd SHA256 /f "$test\test.pfx" /p $plain $msix.FullName
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Add-AppxPackage -Path $msix.FullName
+          $pkg = Get-AppxPackage -Name "LectureHub.Test"
+          if (-not $pkg) { Write-Error "the MSIX did not install"; exit 1 }
+          $alias = "$env:LOCALAPPDATA\Microsoft\WindowsApps"
+          # the window has no alias (one per Application, kept for the worker): start it inside the package
+          $smoke = "$env:RUNNER_TEMP\build\selfcheck-msix-app.json"
+          Invoke-CommandInDesktopPackage -PackageFamilyName $pkg.PackageFamilyName -AppId "LectureHub" `
+            -Command "$($pkg.InstallLocation)\LectureHub.exe" -Args "--smoke --out `"$smoke`""
+          $deadline = (Get-Date).AddMinutes(5)
+          Start-Sleep -Seconds 5
+          while ((Get-Process -Name LectureHub -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          Get-Content $smoke -ErrorAction SilentlyContinue
+          $result = Get-Content $smoke -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+          if (-not $result.ok) { Write-Error "packaged LectureHub.exe --smoke failed"; exit 1 }
+          & "$alias\LectureHubWorker.exe" selfcheck --out "$env:RUNNER_TEMP\build\selfcheck-msix-worker.json"
+          if ($LASTEXITCODE -ne 0) { Write-Error "packaged worker self-check failed"; exit 1 }
+          $cache = "$env:LOCALAPPDATA\Packages\$($pkg.PackageFamilyName)\LocalCache"
+          if (-not (Test-Path $cache)) { Write-Error "the app did not run inside its package (no $cache)"; exit 1 }
+          Get-ChildItem $cache -Recurse -Directory -Depth 2 | Select-Object -ExpandProperty FullName
+          Remove-AppxPackage -Package $pkg.PackageFullName
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\store" | Out-Null
+          if ($env:STORE_NAME -and $env:STORE_PUBLISHER -and $env:STORE_PUBLISHER_DISPLAY) {
+            python tools/build_msix.py --app $app --out "$env:RUNNER_TEMP\store" --name $env:STORE_NAME `
+              --publisher $env:STORE_PUBLISHER --publisher-display-name $env:STORE_PUBLISHER_DISPLAY
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          } else {
+            "No Partner Center identity in the repository variables (MSIX_NAME, MSIX_PUBLISHER, MSIX_PUBLISHER_DISPLAY): upload copy not made." | Tee-Object "$env:RUNNER_TEMP\store\README.txt"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LectureHub-store
+          path: ${{ runner.temp }}/store/
+          retention-days: 14
+
       - name: SHA-256 of what would be released
         shell: pwsh
         run: |

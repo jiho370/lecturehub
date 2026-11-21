@@ -32,6 +32,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import NamedTuple
 
+from lecturehub.core import etl_site
+
 from . import etl_sync, organize
 
 BIG = 300 * 1024 * 1024  # larger files are shown with their size and never fetched without a second yes
@@ -109,12 +111,17 @@ def _plain(html: str | None) -> str:
 def _courses(root: Path, token: str, fetch: etl_sync.Fetch) -> tuple[list[tuple[int, str]], list[str]]:
     prefix, subjects = etl_sync.term_prefix(root), etl_sync.timetable(root)
     matched, unmatched = [], []
-    for course in etl_sync._all(fetch, f"{etl_sync.BASE}/api/v1/courses?enrollment_state=active&per_page=100", token):
+    site = etl_site.base()
+    for course in etl_sync._all(fetch, f"{site}/api/v1/courses?enrollment_state=active&per_page=100", token):
         name = str(course.get("name") or "")
-        if not name.startswith(prefix + " "):
-            continue
-        subject = etl_sync._SECTION.sub("", name[len(prefix) + 1:]).strip()
-        folder = subjects.get(subject)
+        if name.startswith(prefix + " "):
+            subject = etl_sync._SECTION.sub("", name[len(prefix) + 1:]).strip()
+            folder = subjects.get(subject)
+        elif etl_site.is_default():
+            continue  # SNU's eTL: another term's course
+        else:  # another school's Canvas: find a timetable subject inside the course name
+            subject = etl_sync._SECTION.sub("", name).strip()
+            folder = etl_sync.match_subject(subject, subjects)
         if folder:
             matched.append((int(course["id"]), folder))
         else:
@@ -126,9 +133,10 @@ def fetch(root: Path, token: str, fetch: etl_sync.Fetch = etl_sync._http) -> dic
     """Announcements and file lists of this term's timetable courses. A course whose file list is closed is skipped."""
     year = etl_sync.term_prefix(root)[:4]
     courses, unmatched = _courses(root, token, fetch)
+    site = etl_site.base()
     announcements, files, closed = [], [], []
     for course_id, folder in courses:
-        url = (f"{etl_sync.BASE}/api/v1/announcements?context_codes[]=course_{course_id}&per_page=50"
+        url = (f"{site}/api/v1/announcements?context_codes[]=course_{course_id}&per_page=50"
                f"&start_date={year}-01-01&end_date={int(year) + 1}-03-01")
         for item in etl_sync._all(fetch, url, token):
             posted = item.get("posted_at") or item.get("delayed_post_at") or ""
@@ -138,7 +146,7 @@ def fetch(root: Path, token: str, fetch: etl_sync.Fetch = etl_sync._http) -> dic
                 "text": _plain(item.get("message")), "url": item.get("html_url"),
                 "attachments": [str(a.get("display_name") or "") for a in item.get("attachments") or []]})
         try:
-            listed = etl_sync._all(fetch, f"{etl_sync.BASE}/api/v1/courses/{course_id}/files?per_page=100", token)
+            listed = etl_sync._all(fetch, f"{site}/api/v1/courses/{course_id}/files?per_page=100", token)
         except urllib.error.HTTPError as exc:
             if exc.code not in (401, 403, 404):
                 raise
@@ -293,10 +301,24 @@ def _which(item: dict, own: Path, placed: dict | None) -> dict:
     return {**times, "case": case, "certain": certain, "hint": HINTS[case] + ("" if certain else " — 파일 시각으로 본 추정")}
 
 
+def listed_files(root: Path) -> list[dict]:
+    """The 파일 tab's list and, after it, the files attached to professor/TA board posts (etl_board, user
+    2026-11-20) that the 파일 tab does not list — they are eTL files too (same id, size and download link)."""
+    listed = list(_read(_dir(root) / "files.json", {}).get("files", []))
+    seen = {item["id"] for item in listed}
+    for post in _read(_dir(root) / "board_posts.json", []):
+        for item in post.get("files") or []:
+            if item.get("id") in seen:
+                continue
+            seen.add(item["id"])
+            listed.append({**item, "course": post["course"], "where": f"게시판 · {post['board']} · {post['title']}"})
+    return listed
+
+
 def compare(root: Path, *, look_in: list[Path] | None = None) -> list[dict]:
     """Every eTL file with what this PC has of it. Reads names, sizes and dates only."""
     root = Path(root)
-    listed = _read(_dir(root) / "files.json", {}).get("files", [])
+    listed = listed_files(root)
     decided = _read(_dir(root) / "decisions.json", {})
     placed = {entry["path"]: entry for entry in _read(_dir(root) / "placed.json", [])}  # the latest record of a path
     look_in = places() if look_in is None else look_in
@@ -308,7 +330,8 @@ def compare(root: Path, *, look_in: list[Path] | None = None) -> list[dict]:
             inside[item["course"]] = _scan(root / item["course"], deep=True)
         mine = inside[item["course"]]
         key = _key(item["name"])
-        row = {**{k: item[k] for k in ("id", "course", "name", "size", "updated")}, "big": item["size"] > BIG}
+        row = {**{k: item[k] for k in ("id", "course", "name", "size", "updated")}, "big": item["size"] > BIG,
+               "where": item.get("where", "")}
         same_size = [f for f in mine if f.size == item["size"] and f.path.suffix.lower() == key[1]]
         same_name = [f for f in mine if f.key == key]
         if same_size:
@@ -342,7 +365,7 @@ class _HttpsOnly(urllib.request.HTTPRedirectHandler):
 def _checked_url(url: str) -> str:
     """What eTL listed is input from outside: only an https address on the eTL host itself is asked for."""
     parts = urllib.parse.urlsplit(str(url))
-    if parts.scheme != "https" or parts.hostname != urllib.parse.urlsplit(etl_sync.BASE).hostname:
+    if parts.scheme != "https" or parts.hostname != urllib.parse.urlsplit(etl_site.base()).hostname:
         raise ValueError("eTL 주소가 아닌 내려받기 주소라 받지 않습니다.")
     return str(url)
 
@@ -404,7 +427,7 @@ def take(root: Path, file_id: int, *, beside: bool = False, allow_big: bool = Fa
     else:
         if row["big"] and not allow_big:
             raise ValueError(f"큰 파일입니다({row['size'] / 1024 ** 3:.2f}GB). 받으려면 한 번 더 확인해 주세요.")
-        url = next((f.get("url") for f in _read(_dir(root) / "files.json", {}).get("files", []) if f["id"] == row["id"]), None)
+        url = next((f.get("url") for f in listed_files(root) if f["id"] == row["id"]), None)
         if not url:
             raise ValueError("이 파일의 내려받기 주소가 없습니다. [지금 가져오기]를 다시 눌러 주세요.")
         _checked_url(url)  # also when a test or another caller brings its own download function

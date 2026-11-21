@@ -839,9 +839,9 @@
   }
 
   /* ---------- start screen: this month's calendar + today's to-do (user 2026-09-29: "C안처럼") ---------- */
-  function dayAttrs(iso, today, count) {
+  function dayAttrs(iso, today, count, tabStop) {
     const [y, m, d] = iso.split("-").map(Number), wd = "일월화수목금토"[new Date(y, m - 1, d).getDay()];
-    const stop = today && today.slice(0, 7) === iso.slice(0, 7) ? iso === today : d === 1;
+    const stop = tabStop !== undefined ? tabStop : today && today.slice(0, 7) === iso.slice(0, 7) ? iso === today : d === 1;
     return ` role="button" tabindex="${stop ? 0 : -1}" aria-label="${m}월 ${d}일 ${wd}요일${iso === today ? ", 오늘" : ""}${count ? `, 일정 ${count}개` : ""}"`;
   }
   document.addEventListener("keydown", (e) => {
@@ -852,24 +852,49 @@
     if (!next) return;
     e.preventDefault(); all.forEach((x) => { x.tabIndex = -1; }); next.tabIndex = 0; next.focus();
   });
+  const isoOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  function homeToday() {
+    const t = ui.info && ui.info.today_iso ? ui.info.today_iso.split("-").map(Number) : null, now = new Date();
+    return t ? new Date(t[0], t[1] - 1, t[2]) : new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  }
+  /* The start screen opens on this week at the top (5 weeks, across the month end); ◀ ▶ page whole months
+     and [이번 주] comes back (user 2026-11-20). */
+  const HOME_WEEKS = 5;
+  async function homeCalendar(H) {
+    if (!H.week) return { r: await api.calendar(H.year, H.month), cells: null };
+    const today = homeToday(), mon = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (today.getDay() + 6) % 7);
+    const cells = [...Array(HOME_WEEKS * 7)].map((_, i) => new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + i));
+    const months = [...new Set(cells.map((d) => `${d.getFullYear()}-${d.getMonth() + 1}`))].map((k) => k.split("-").map(Number));
+    const parts = await Promise.all(months.map(([y, m]) => api.calendar(y, m)));
+    const bad = parts.find((p) => !p.ok), mine = parts[months.findIndex(([y, m]) => y === today.getFullYear() && m === today.getMonth() + 1)] || parts[0];
+    if (bad) return { r: bad, cells };
+    // upcoming·candidates·next exam do not depend on the month asked; events and 휴강 rows are per month
+    return { r: { ...mine, events: parts.flatMap((p) => p.events), exceptions: parts.flatMap((p) => p.exceptions) }, cells };
+  }
   async function renderHome() {
-    const now = new Date(), H = ui.home || (ui.home = { year: now.getFullYear(), month: now.getMonth() + 1 });
-    const [r, board] = await Promise.all([api.calendar(H.year, H.month), api.etl_board()]);
+    const now = homeToday(), H = ui.home || (ui.home = { week: true, year: now.getFullYear(), month: now.getMonth() + 1 });
+    const [{ r, cells }, board] = await Promise.all([homeCalendar(H), api.etl_board()]);
     showExamChip(r);  // next_exam does not depend on the month shown: no second calendar call
     if (ui.view !== "home") return;
     ui.homeData = r; ui.homeBoard = board.ok ? board : null;
-    $("homeTitle").textContent = `${H.year}년 ${H.month}월`;
+    $("homeWeek").hidden = !!H.week;
+    if (H.week) {
+      const a = cells[0], b = cells[cells.length - 1];
+      $("homeTitle").textContent = `${a.getFullYear()}년 ${a.getMonth() + 1}월 ${a.getDate()}일 – ${b.getMonth() + 1}월 ${b.getDate()}일`;
+    } else $("homeTitle").textContent = `${H.year}년 ${H.month}월`;
     if (!r.ok) { $("homeGrid").innerHTML = `<div class="hint">달력을 열 수 없습니다: ${esc(r.error)}</div>`; renderTodo(null); return; }
-    const first = new Date(H.year, H.month - 1, 1), days = new Date(H.year, H.month, 0).getDate(), lead = (first.getDay() + 6) % 7;
+    const first = new Date(H.year, H.month - 1, 1), lead = H.week ? 0 : (first.getDay() + 6) % 7;
+    const days = cells || [...Array(new Date(H.year, H.month, 0).getDate())].map((_, i) => new Date(H.year, H.month - 1, i + 1));
     const byDay = {}; r.events.forEach((e) => { (byDay[e.date] = byDay[e.date] || []).push(e); });
     const exc = {}; r.exceptions.forEach((e) => { (exc[e.date] = exc[e.date] || []).push(e); });
     let html = "월화수목금토일".split("").map((d) => `<div class="dow">${d}</div>`).join("") + "<div></div>".repeat(lead);
-    for (let d = 1; d <= days; d++) {
-      const iso = `${H.year}-${String(H.month).padStart(2, "0")}-${String(d).padStart(2, "0")}`, list = byDay[iso] || [];
+    days.forEach((day, i) => {
+      const iso = isoOf(day), d = day.getDate(), list = byDay[iso] || [];
+      const label = H.week && (d === 1 || i === 0) ? `${day.getMonth() + 1}/${d}` : `${d}`;  // say where a month starts
       const items = list.slice(0, 3).map((e) => `<div class="ev k-${e.kind}${e.source === "etl" ? " etl" : ""}" data-ev="${e.id}" title="${esc(e.title + (e.note ? " — " + e.note : ""))}">${e.course ? esc(e.course) + " " : ""}${esc(e.kind_label)}</div>`).join("");
       const ex = (exc[iso] || []).map((e) => `<div class="ex" title="${esc(e.note)}">${esc(e.course)} ${esc(e.kind)}${e.confirmation === "confirmed_by_user" ? "" : "(추정)"}</div>`).join("");
-      html += `<div class="day${iso === r.today ? " today" : ""}" data-day="${iso}"${dayAttrs(iso, r.today, list.length)}><span class="n">${d}</span>${ex}${items}${list.length > 3 ? `<div class="more">+${list.length - 3}</div>` : ""}</div>`;
-    }
+      html += `<div class="day${iso === r.today ? " today" : ""}${iso < r.today ? " past" : ""}" data-day="${iso}"${dayAttrs(iso, r.today, list.length, H.week ? iso === r.today : undefined)}><span class="n">${label}</span>${ex}${items}${list.length > 3 ? `<div class="more">+${list.length - 3}</div>` : ""}</div>`;
+    });
     $("homeGrid").innerHTML = html;
     renderTodo(r);
   }
@@ -892,7 +917,7 @@
       (e.kind === "assignment" && ed("assignment") ? `<span class="hw-acts"><button class="mini" data-hw="${e.id}" title="과제 파일·작성요령·관련 수업 노트를 모아 Claude Code로 과제를 시작합니다">과제 준비</button><button class="mini" data-hwopen="${e.id}" title="모아 둔 과제 폴더 열기">폴더</button></span>` : "") + `</div>`).join("");
     const holds = side ? side.holds : 0, cands = r ? r.candidates.length : 0;
     const checks = (holds ? `<div class="td" data-inbox="1"><span class="dd">${holds}건</span><span class="what">확인함 — 어느 수업 것인지 골라 줄 녹음·파일</span></div>` : "") +
-      (cands ? `<div class="td" data-cands="1"><span class="dd">${cands}건</span><span class="what">달력 후보 — 수업 중 언급된 날짜</span></div>` : "") + etlTodo();
+      (cands ? `<div class="td" data-cands="1"><span class="dd">${cands}건</span><span class="what">달력 후보 — 수업 중 언급·게시판 글의 날짜</span></div>` : "") + etlTodo();
     $("todo").innerHTML = `<div class="sl">오늘 수업</div>${classes || `<div class="none">오늘은 수업이 없습니다</div>`}` +
       `<div class="sl">마감·시험 (3주 안)</div>${due || `<div class="none">3주 안에 잡힌 일정이 없습니다</div>`}` +
       (checks ? `<div class="sl">확인할 것</div>${checks}` : "");
@@ -902,27 +927,46 @@
   function etlTodo() {
     const b = ui.homeBoard; if (!b) return "";
     const since = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
-    const fresh = b.announcements.filter((a) => a.posted.slice(0, 10) >= since);
-    return (fresh.length ? `<div class="td" data-cands="1"><span class="dd">${fresh.length}건</span><span class="what">eTL 새 공지<small>${esc(fresh.slice(0, 2).map((a) => a.course + " · " + a.title).join(" / "))}</small></span></div>` : "") +
+    const fresh = [...b.announcements, ...(b.posts || [])].filter((a) => a.posted.slice(0, 10) >= since)
+      .sort((x, y) => (x.posted < y.posted ? 1 : -1));
+    return (fresh.length ? `<div class="td" data-cands="1"><span class="dd">${fresh.length}건</span><span class="what">eTL 새 공지·게시판 글<small>${esc(fresh.slice(0, 2).map((a) => a.course + " · " + a.title).join(" / "))}</small></span></div>` : "") +
       (b.files.length ? `<div class="td" data-cands="1"><span class="dd">${b.files.length}개</span><span class="what">eTL 자료 — 과목 폴더에 없는 파일<small>${b.files.some((f) => f.case === "etl" || f.case === "both") ? "eTL에서 바뀐 자료 있음" : b.files.some((f) => f.state === "changed") ? "내가 고친 파일 확인" : "받기·옮기기"}</small></span></div>` : "");
   }
 
   /* schedule notices heard in class (AI reads the whole transcript, user request 2026-10-30): a banner until "확인함" */
   async function loadNotices() {
     if (!api || !api.notices) return;
-    const r = await api.notices();
-    if (!r || !r.ok) return;
-    // decided on the calendar already (confirmed or ignored): nothing left to tell
-    const done = r.unseen.filter((n) => n.status === "confirmed" || n.status === "cancelled").map((n) => n.key);
-    if (done.length) api.notices_seen(done);
-    ui.notices = r.unseen.filter((n) => !done.includes(n.key));
+    const [r, posts] = await Promise.all([api.notices(), api.etl_board_new ? api.etl_board_new() : null]);
+    if (posts && posts.ok) ui.boardNew = posts.items;
+    if (r && r.ok) {
+      // decided on the calendar already (confirmed or ignored): nothing left to tell
+      const done = r.unseen.filter((n) => n.status === "confirmed" || n.status === "cancelled").map((n) => n.key);
+      if (done.length) api.notices_seen(done);
+      ui.notices = r.unseen.filter((n) => !done.includes(n.key));
+    }
     renderNotices();
   }
 
+  /* new eTL board posts, with or without files: what was posted, until 확인함 (user 2026-11-20) */
+  function boardNewHtml() {
+    const list = ui.boardNew || [], open = ui.boardOpen || (ui.boardOpen = new Set());
+    if (!list.length) return "";
+    const rows = list.slice(0, 4).map((p) => {
+      const text = (p.text || "").replace(/\s+/g, " ").trim(), long = text.length > 160, full = open.has(p.id);
+      const files = (p.files || []).map((f) => f.name);
+      return `<div class="nb-item" data-key="${esc(p.id)}">
+      <div class="nb-head"><b>${esc(p.course)} · ${esc(p.title)}</b><span class="nb-cert">${esc(mdText(p.posted.slice(0, 10)))} 올림</span></div>
+      <div class="nb-sum">${text ? esc(full || !long ? text : text.slice(0, 160) + "…") : "본문 없음"}</div>
+      <div class="nb-why">${esc(p.board)} · ${esc(p.author)}${files.length ? ` · 첨부: ${esc(files.join(", "))}` : p.attachments ? ` · 첨부 ${p.attachments}개` : " · 첨부 없음"}</div>
+      <div class="nb-acts">${long ? `<button class="mini" data-bn-more="${esc(p.id)}">${full ? "접기" : "내용 전체"}</button>` : ""}<button class="mini" data-bn-seen="${esc(p.id)}">확인함</button></div></div>`;
+    }).join("");
+    return `<div class="nb-top"><b>eTL 게시판 새 글 ${list.length}건</b><small>교수·조교가 올린 글 · 하루 한 번 읽음</small><span class="grow"></span>${list.length > 1 ? `<button class="mini" data-bn-all="1">모두 확인함</button>` : ""}</div>${rows}${list.length > 4 ? `<div class="nb-more">외 ${list.length - 4}건</div>` : ""}`;
+  }
+
   function renderNotices() {
-    const bar = $("noticeBar"), list = ui.notices || [];
-    bar.hidden = !list.length;
-    if (!list.length) { bar.innerHTML = ""; return; }
+    const bar = $("noticeBar"), list = ui.notices || [], board = boardNewHtml();
+    bar.hidden = !list.length && !board;
+    if (!list.length) { bar.innerHTML = board; return; }
     const when = (n) => n.date ? `${dayText(n.date)}${n.date_precision === "approx" ? " 쯤" : ""}` : "날짜 미정";
     const who = { professor: "교수", ta: "조교", student: "학생" };
     const rows = list.slice(0, 4).map((n) => `<div class="nb-item" data-key="${esc(n.key)}">
@@ -932,12 +976,16 @@
       ${n.date_reasoning ? `<div class="nb-why">날짜 근거: ${esc(n.date_reasoning)}</div>` : ""}
       ${n.stt_note ? `<div class="nb-why">잘못 들렸을 수 있음(추정): ${esc(n.stt_note)}</div>` : ""}
       <div class="nb-acts">${n.event_id && n.date ? `<button class="mini" data-nb-cal="${esc(n.key)}">달력에서 확정·무시</button>` : ""}<button class="mini" data-nb-seen="${esc(n.key)}">확인함</button></div></div>`).join("");
-    bar.innerHTML = `<div class="nb-top"><b>수업 중 공지 ${list.length}건</b><small>AI가 전사본 전체를 읽고 찾은 것 · 확정 전까지는 후보</small><span class="grow"></span>${list.length > 1 ? `<button class="mini" data-nb-all="1">모두 확인함</button>` : ""}</div>${rows}${list.length > 4 ? `<div class="nb-more">외 ${list.length - 4}건</div>` : ""}`;
+    bar.innerHTML = `<div class="nb-top"><b>수업 중 공지 ${list.length}건</b><small>AI가 전사본 전체를 읽고 찾은 것 · 확정 전까지는 후보</small><span class="grow"></span>${list.length > 1 ? `<button class="mini" data-nb-all="1">모두 확인함</button>` : ""}</div>${rows}${list.length > 4 ? `<div class="nb-more">외 ${list.length - 4}건</div>` : ""}` + board;
   }
 
   function bindNotices() {
     $("noticeBar").addEventListener("click", async (ev) => {
       const t = ev.target.closest("button"); if (!t) return;
+      const posts = ui.boardNew || [];
+      if (t.dataset.bnMore) { const o = ui.boardOpen; o.has(t.dataset.bnMore) ? o.delete(t.dataset.bnMore) : o.add(t.dataset.bnMore); renderNotices(); return; }
+      if (t.dataset.bnAll) { await api.etl_board_seen(posts.map((p) => p.id)); ui.boardNew = []; renderNotices(); return; }
+      if (t.dataset.bnSeen) { await api.etl_board_seen([t.dataset.bnSeen]); ui.boardNew = posts.filter((p) => p.id !== t.dataset.bnSeen); renderNotices(); return; }
       const list = ui.notices || [];
       if (t.dataset.nbAll) { await api.notices_seen(list.map((n) => n.key)); ui.notices = []; renderNotices(); return; }
       if (t.dataset.nbSeen) { await api.notices_seen([t.dataset.nbSeen]); ui.notices = list.filter((n) => n.key !== t.dataset.nbSeen); renderNotices(); return; }
@@ -2248,10 +2296,18 @@
           : `<span class="link" data-etlf="${f.big ? "big" : "take"}" data-id="${f.id}">${f.state === "local" ? "과목 폴더로 옮기기" : "받기"}</span>`;
         const detail = f.state === "changed"
           ? `<b>${esc(f.hint)}</b><br>내 파일 ${size(f.mine_size)} · 받은 때 ${esc(f.mine_created.replace("T", " "))} · 고친 때 ${esc(f.mine_changed.replace("T", " "))}<br>eTL 파일 ${size(f.size)} · 올라온 때 ${esc(f.updated.replace("T", " "))}`
-          : `${size(f.size)} · eTL ${esc(f.updated.slice(0, 10))}${f.big ? " · 큰 파일" : ""}`;
-        return `<div class="ef ${f.state}"><div><b>${esc(f.course)}</b> ${esc(f.name)} <small>${f.state === "changed" ? who[f.case] : what[f.state]}</small></div><div class="nsub">${detail}</div><div class="eacts">${acts}</div></div>`;
+          : `${size(f.size)} · eTL ${esc(f.updated.slice(0, 10))}${f.big ? " · 큰 파일" : ""}${f.where ? " · " + esc(f.where) : ""}`;
+        return `<div class="ef ${f.state}"><div><b>${esc(f.course)}</b> ${esc(f.name)} <small>${f.state === "changed" ? who[f.case] : what[f.state]}${f.where ? " · 게시판 첨부" : ""}</small></div><div class="nsub">${detail}</div><div class="eacts">${acts}</div></div>`;
       }).join("");
+      /* course boards (게시판 tab): read on [게시판 확인] or once a week (user 2026-11-20) */
+      const pc = b.post_check || {}, posts = (b.posts || []).slice(0, state.allPosts ? 30 : 5);
+      const postRows = posts.map((p) =>
+        `<div class="ann${open.has(p.id) ? " open" : ""}" data-ann="${esc(p.id)}"><div class="ah"><span class="num">${esc(mdText(p.posted.slice(0, 10)))}</span><b>${esc(p.course)}</b><span>${esc(p.title)}<small> · ${esc(p.board)}</small></span></div>` +
+        (open.has(p.id) ? `<div class="at">${esc(p.text)}<div class="nsub">${esc(p.author)}${p.attachments ? ` · 첨부 ${p.attachments}개` : ""} · eTL 게시판에서 보기: ${esc(p.url)}</div></div>` : "") + `</div>`).join("");
+      const checked = pc.ok_at ? `${ago(pc.ok_at)} 확인` : "아직 확인 안 함";
+      const postHead = `<div class="sl">eTL 게시판 <small>${checked}${pc.error && (!pc.ok_at || pc.error_at > pc.ok_at) ? ` · <span class="warn">${esc(pc.error)}</span>` : ""}</small> <span class="link" data-c="board-check">게시판 확인</span>${(b.posts || []).length > 5 && !state.allPosts ? ` <span class="link" data-c="posts-all">전체 ${b.posts.length}건</span>` : ""}</div>`;
       return `<div class="sl">eTL 공지${b.announcements.length > 5 && !state.allAnn ? ` <span class="link" data-c="ann-all">전체 ${b.announcements.length}건</span>` : ""}</div>${notes || `<div class="hint">가져온 공지가 없습니다.</div>`}` +
+        postHead + (postRows || `<div class="hint">${pc.ok_at ? "게시판에 글이 없습니다." : "과제 탭·공지에 없고 게시판에만 올라오는 글이 있습니다. [게시판 확인]을 누르면 읽어 옵니다(앱이 열려 있으면 하루 한 번 저절로 읽고, 새 글은 위에 알려 줍니다)."}</div>`) +
         `<div class="sl">eTL 자료 — 과목 폴더에 없는 것 ${b.files.length}개 <small>(있는 것 ${b.have} / 전체 ${b.total})</small>${b.files.some((f) => f.state !== "changed" && !f.big) ? ` <span class="link" data-etlf="all" data-id="0">빠진 파일 모두 받기 (${b.files.filter((f) => f.state !== "changed" && !f.big).length}개)</span>` : ""}</div>${files || `<div class="hint">${b.total ? "eTL에 올라온 파일이 모두 과목 폴더에 있습니다." : "아직 파일 목록을 가져오지 않았습니다. [지금 가져오기]를 누르세요."}</div>`}` +
         (b.closed.length ? `<div class="nsub">파일 목록을 열어 두지 않은 과목: ${esc(b.closed.join(", "))}</div>` : "");
     };
@@ -2305,13 +2361,14 @@
       const up = r.upcoming.map((e) => `<div class="up" data-edit="${e.id}"><span class="dd">${dday(e.d_day)}</span><span>${e.course ? esc(e.course) + " · " : ""}${esc(e.title)}<small>${mdText(e.date)}${e.start_ms !== null ? " " + hhmm(e.start_ms) : ""}${e.source === "etl" ? " · eTL" : ""}${e.note && e.source !== "etl" ? " · " + esc(e.note) : ""}</small>${hw(e)}</span></div>`).join("") || `<div class="hint">60일 안에 잡힌 일정이 없습니다.</div>`;
       const cand = r.candidates.map((c) => {
         const ev = c.evidence || {};
-        return `<div class="cand"><div><b>${c.course ? esc(c.course) + " · " : ""}${esc(c.kind_label)} ${esc(c.date_text || mdText(c.date))}</b> <small>${esc(c.title)}${ev.engines_agree > 1 ? ` · 엔진 ${ev.engines_agree}개 일치` : " · 한 엔진만"}</small></div>` +
-          `<div class="q">${masked ? "(전사 가림 — 전사 탭의 [전사 보기]를 누르면 인용이 보입니다)" : "“" + esc(ev.quote || "") + "”"}</div>` +
+        const where = ev.post_id ? ` · eTL 게시판 '${esc(ev.board)}' ${esc(mdText((ev.posted || "").slice(0, 10)))}` : ev.engines_agree > 1 ? ` · 엔진 ${ev.engines_agree}개 일치` : " · 한 엔진만";
+        return `<div class="cand"><div><b>${c.course ? esc(c.course) + " · " : ""}${esc(c.kind_label)} ${esc(c.date_text || mdText(c.date))}</b> <small>${esc(c.title)}${where}</small></div>` +
+          `<div class="q">${masked && !ev.post_id ? "(전사 가림 — 전사 탭의 [전사 보기]를 누르면 인용이 보입니다)" : "“" + esc(ev.quote || "") + "”"}</div>` +
           `<div class="acts">${ev.lecture_id ? `<button class="ghost" data-go="${ev.lecture_id}" data-ms="${ev.at_ms || 0}">전사로 가기</button>` : ""}<button class="ghost" data-edit="${c.id}">날짜 고쳐서 확정</button><button class="primary" data-confirm="${c.id}">확정</button><button class="ghost" data-dismiss="${c.id}">무시</button></div></div>`;
       }).join("");
       scrim.querySelector("#calSide").innerHTML = (state.editing ? form() : "") +
-        `<div class="sl">다가오는 일정</div>${up}` + (cand ? `<div class="sl">확인 필요 — 수업 중 언급 ${r.candidates.length}건</div>${cand}` : "") +
-        etlLine() + etlBoard() + `<div class="src">출처: 직접 입력 · eTL 과제 마감·공지·자료 목록(읽기만, 받기는 누를 때만) · 수업 중 발언(확정 전까지 후보)</div>`;
+        `<div class="sl">다가오는 일정</div>${up}` + (cand ? `<div class="sl">확인 필요 — 수업 중 언급·게시판 글 ${r.candidates.length}건</div>${cand}` : "") +
+        etlLine() + etlBoard() + `<div class="src">출처: 직접 입력 · eTL 과제 마감·공지·게시판·자료 목록(읽기만, 받기는 누를 때만) · 수업 중 발언·게시판 글의 날짜(확정 전까지 후보)</div>`;
     };
     const form = () => {
       const e = state.editing, r = state.data;
@@ -2334,12 +2391,20 @@
       if (t.dataset.etlf) return etlFile(t);
       if (t.dataset.ann) { const o = state.openAnn; o.has(t.dataset.ann) ? o.delete(t.dataset.ann) : o.add(t.dataset.ann); return draw(); }
       if (c === "ann-all") { state.allAnn = true; return draw(); }
+      if (c === "posts-all") { state.allPosts = true; return draw(); }
+      if (c === "board-check") {
+        toast("eTL 게시판을 읽는 중…");
+        const r = await api.etl_board_check();
+        toast(r.ok ? `게시판 글 ${r.posts}건 확인 · 달력 후보 새로 ${r.candidates_added}건` + (r.failed.length ? ` · 못 읽은 과목: ${r.failed.join(", ")}` : "") : r.error);
+        loadNotices();  // new posts go to the banner on top
+        return load();
+      }
       if (c === "close") return close();
       if (t.dataset.hw) return prepareAssignment(t.dataset.hw);
       if (t.dataset.hwopen) { const x = await api.assignment_open(t.dataset.hwopen); if (!x.ok) toast(x.error); return; }
       if (c === "etl-sync") return etlSync();
       if (c === "etl-connect") {
-        const token = await askText({ title: "eTL 연결", ok: "연결", secret: true, body: "eTL(myetl.snu.ac.kr) → 계정 → 설정 → '새 액세스 토큰'에서 용도에 Lecture Hub를 적고 만든 토큰을 붙여 넣으세요. 과제 목록을 읽기만 하고, 토큰은 이 PC의 Windows 자격 증명 관리자에만 저장됩니다." });
+        const token = await askText({ title: "eTL 연결", ok: "연결", secret: true, body: "eTL(myetl.snu.ac.kr, 다른 학교는 설정에서 고른 학교 Canvas) → 계정 → 설정 → '새 액세스 토큰'에서 용도에 Lecture Hub를 적고 만든 토큰을 붙여 넣으세요. 과제 목록을 읽기만 하고, 토큰은 이 PC의 Windows 자격 증명 관리자에만 저장됩니다." });
         if (token && token.trim()) return etlSync(token.trim());
         return;
       }
@@ -2862,13 +2927,17 @@
     $("examBtn").onclick = () => openNotes();
     $("importBtn").onclick = () => openImport();
     bindDrop();
-    $("homePrev").onclick = () => { const d = new Date(ui.home.year, ui.home.month - 2, 1); ui.home = { year: d.getFullYear(), month: d.getMonth() + 1 }; renderHome(); };
-    $("homeNext").onclick = () => { const d = new Date(ui.home.year, ui.home.month, 1); ui.home = { year: d.getFullYear(), month: d.getMonth() + 1 }; renderHome(); };
+    // from the week view ◀ shows this whole month and ▶ the next one; after that whole months
+    const homeMonth = (step) => { const H = ui.home, d = new Date(H.year, H.month - 1 + (H.week && step < 0 ? 0 : step), 1); ui.home = { year: d.getFullYear(), month: d.getMonth() + 1 }; renderHome(); };
+    $("homePrev").onclick = () => homeMonth(-1);
+    $("homeNext").onclick = () => homeMonth(1);
+    $("homeWeek").onclick = () => { ui.home = null; renderHome(); };
     $("homeAdd").onclick = () => openCalendar(ui.home.year, ui.home.month, { day: ui.info.today_iso });
     $("homeGrid").addEventListener("click", (e) => {
       const ev = e.target.closest("[data-ev]"), day = e.target.closest("[data-day]");
-      if (ev) openCalendar(ui.home.year, ui.home.month, { id: ev.dataset.ev });
-      else if (day) openCalendar(ui.home.year, ui.home.month, { day: day.dataset.day });
+      const [y, m] = day ? day.dataset.day.split("-").map(Number) : [ui.home.year, ui.home.month];  // the week view crosses months
+      if (ev) openCalendar(y, m, { id: ev.dataset.ev });
+      else if (day) openCalendar(y, m, { day: day.dataset.day });
     });
     $("todo").addEventListener("click", async (e) => {
       const t = e.target.closest("[data-hw],[data-hwopen],[data-lecture],[data-course],[data-ev],[data-inbox],[data-cands]"); if (!t) return;
@@ -3274,6 +3343,7 @@
       const keys = s.keys.map((k) => `<div class="conn" data-id="${esc(k.id)}">
         <div class="ct"><b>${esc(k.label)}</b> <span class="pill ${k.connected ? "on" : "off"}">${k.connected ? "연결됨" + (k.source === "env" ? " (환경 변수)" : "") : "연결 안 됨"}</span></div>
         <div class="cn">${esc(k.steps)} ${esc(k.note)}</div>
+        ${k.site ? `<div class="cn">학교: ${k.site.default ? "서울대 eTL (myetl.snu.ac.kr)" : esc(k.site.base)} <button class="ghost" data-a="etlsite" ${busy ? "disabled" : ""}>다른 학교 Canvas</button></div>` : ""}
         <div class="ca"><button data-a="connect" ${busy ? "disabled" : ""}>${k.connected ? "키 바꾸기" : "연결"}</button>
           ${k.connected ? `<button data-a="test" ${busy ? "disabled" : ""}>테스트</button><button class="ghost" data-a="remove">연결 끊기</button>` : ""}
           <button class="ghost" data-a="help">키 받는 곳 ↗</button><span class="cmsg${note[k.id] ? " " + note[k.id].tone : ""}" id="cm-${esc(k.id)}">${busy === k.id ? "서비스에 확인하는 중… (몇 초)" : note[k.id] ? esc(note[k.id].text) : ""}</span></div></div>`).join("");
@@ -3388,6 +3458,14 @@
         gsr.rmsg = r.ok ? "저장했습니다" : r.error; return draw(last);
       }
       if (a === "help" || a === "thelp") { await api.conn_open_help(id); return; }
+      if (a === "etlsite") {  // another school's Canvas (2026-11-20); blank = SNU's eTL. The old token is not sent to a new site.
+        const k = (last && last.keys || []).find((x) => x.id === "etl"), now = k && k.site && !k.site.default ? k.site.base : "";
+        const value = await askText({ title: "학교 Canvas 주소", ok: "저장", value: now, body: "학교 학습 사이트가 Canvas라면 그 주소를 넣으세요(예: canvas.school.ac.kr). 비워 두면 서울대 eTL입니다. 주소를 바꾸면 전에 저장한 토큰은 쓰지 않으니, 새 학교 Canvas에서 토큰을 만들어 다시 연결하세요." });
+        if (value === null || value === undefined) return;
+        const r = await api.conn_etl_site(value.trim());
+        toast(r.ok ? (r.default ? "서울대 eTL로 정했습니다" : `학교 Canvas를 ${r.base}로 정했습니다`) + (r.ok && !r.token_fits ? " · 토큰을 다시 연결하세요" : "") : r.error);
+        await load(); return;
+      }
       if (a === "remove") {
         if (!(await dialog({ title: "연결 끊기", body: "이 PC에 저장된 키를 지웁니다. 서비스 쪽 키는 그대로이니 필요하면 그곳에서 지우세요.", ok: "끊기", tone: "danger" }))) return;
         const r = await api.conn_remove(id); toast(r.ok ? (r.still_from_env ? "저장된 키를 지웠습니다. 환경 변수의 키는 남아 있습니다." : "끊었습니다") : r.error); await load(); return;

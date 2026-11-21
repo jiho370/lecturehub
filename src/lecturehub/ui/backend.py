@@ -603,6 +603,16 @@ class Backend:
 
         return connections.remove(provider)
 
+    def conn_etl_site(self, address: str | None) -> dict:
+        """Which Canvas site eTL means: blank = SNU's eTL, else another school's Canvas address (2026-11-20).
+        A token saved for the old site is not used for the new one; the user connects again."""
+        from lecturehub.core import etl_site
+
+        try:
+            return {"ok": True, **etl_site.set_base(address)}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
     # ---------- small UI memory (user 2026-09-30): the source each course was last recorded with
     def _prefs_path(self) -> Path:
         return self.root / "_lecturehub" / "ui_prefs.json"

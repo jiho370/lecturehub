@@ -11,7 +11,7 @@ import os
 import urllib.error
 import urllib.request
 
-from lecturehub.core import tools
+from lecturehub.core import etl_site, tools
 
 KEYRING_SERVICE = "lecturehub"
 
@@ -44,13 +44,24 @@ PROVIDERS: dict[str, dict] = {
 }
 
 
+def meta_for(provider: str) -> dict:
+    """``PROVIDERS[provider]`` with the eTL row pointed at the Canvas site in use (another school's, 2026-11-20)."""
+    meta = PROVIDERS[provider]
+    if provider != "etl" or etl_site.is_default():
+        return meta
+    site = etl_site.base()
+    return {**meta, "label": f"학교 Canvas ({etl_site.host()})", "help_url": f"{site}/profile/settings",
+            "steps": "학교 Canvas → 계정 → 설정 → '새 액세스 토큰'에서 용도에 Lecture Hub를 적고 만든 토큰을 붙여 넣으세요.",
+            "test_url": f"{site}/api/v1/users/self", "note": f"읽기만 합니다. 토큰은 {etl_site.host()}로만 보냅니다."}
+
+
 def _stored(provider: str) -> str | None:
     meta = PROVIDERS[provider]
     try:
         import keyring
 
         value = keyring.get_password(KEYRING_SERVICE, meta["keyring"])
-        if value:
+        if value and (provider != "etl" or etl_site.token_fits()):  # a token made for another school's site stays unused
             return value
     except Exception:  # noqa: BLE001 - a broken credential store counts as "not stored"
         pass
@@ -68,10 +79,14 @@ def key_for(provider: str) -> str | None:
 def status() -> list[dict]:
     """One row per key: id, label, steps, help_url, note, ``connected`` and ``source`` (keyring/env/None)."""
     rows = []
-    for pid, meta in PROVIDERS.items():
+    for pid in PROVIDERS:
+        meta = meta_for(pid)
         source = "keyring" if _stored(pid) else "env" if _from_env(pid) else None
-        rows.append({"id": pid, "label": meta["label"], "steps": meta["steps"], "help_url": meta["help_url"],
-                     "note": meta["note"], "connected": source is not None, "source": source})
+        row = {"id": pid, "label": meta["label"], "steps": meta["steps"], "help_url": meta["help_url"],
+               "note": meta["note"], "connected": source is not None, "source": source}
+        if pid == "etl":
+            row["site"] = {"base": etl_site.base(), "default": etl_site.is_default()}
+        rows.append(row)
     return rows
 
 
@@ -101,6 +116,8 @@ def save(provider: str, key: str) -> dict:
         keyring.set_password(KEYRING_SERVICE, PROVIDERS[provider]["keyring"], key)
     except Exception as exc:  # noqa: BLE001 - shown to the user
         return {"ok": False, "error": f"자격 증명 관리자에 저장하지 못했습니다({type(exc).__name__})"}
+    if provider == "etl":
+        etl_site.remember_token_site()
     return {"ok": True}
 
 
@@ -123,7 +140,7 @@ def test(provider: str, key: str | None = None, *, opener=None, timeout: float =
     """Ask the service's own list endpoint whether ``key`` (or the stored one) is accepted. Sends no lecture data."""
     if provider not in PROVIDERS:
         return {"ok": False, "error": "알 수 없는 연결입니다."}
-    meta = PROVIDERS[provider]
+    meta = meta_for(provider)
     key = clean_key(key or "") or key_for(provider)
     if not key:
         return {"ok": False, "kind": "missing", "error": "연결된 키가 없습니다."}

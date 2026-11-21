@@ -783,9 +783,52 @@ class Library:
     @_safe
     def etl_board(self) -> dict:
         """eTL announcements and the course files that are not in the course folder yet (index/etl_files.py)."""
-        from lecturehub.index import etl_files
+        from lecturehub.index import etl_board, etl_files
 
-        return etl_files.board(self.root)
+        return {**etl_files.board(self.root), "posts": etl_board.posts(self.root)[:30],
+                "post_check": etl_board.status(self.root)}
+
+    @_safe
+    def etl_board_check(self) -> dict:
+        """[게시판 확인]: read the course boards now (index/etl_board.py) and add dated posts as calendar candidates."""
+        from lecturehub.index import etl_board, etl_sync
+
+        token = etl_sync.load_token()
+        if not token:
+            raise ValueError("eTL에 연결돼 있지 않습니다. 먼저 [eTL 연결]에서 토큰을 넣어 주세요")
+        result = etl_board.refresh(self.root, token)
+        with self._open() as connection, connection:
+            found = etl_board.import_candidates(connection, etl_board.posts(self.root))
+        return {**result, **found}
+
+    def etl_board_auto(self) -> list[dict]:
+        """Once a day (app start and the 10-minute loop, never while recording — the caller checks): read the
+        boards when due, add dated posts as candidates, and return the new posts to tell (user 2026-11-20)."""
+        from lecturehub.index import etl_board, etl_sync
+
+        token = etl_sync.load_token()
+        if token and etl_board.due(self.root):
+            try:
+                etl_board.refresh(self.root, token)
+            except Exception:  # noqa: BLE001 - kept in board_sync.json, shown beside [게시판 확인]
+                return []
+            if self.path.is_file():
+                with self._open() as connection, connection:
+                    etl_board.import_candidates(connection, etl_board.posts(self.root))
+        return etl_board.to_tell(self.root)
+
+    @_safe
+    def etl_board_new(self) -> dict:
+        """New board posts not marked 확인함 (the banner on top)."""
+        from lecturehub.index import etl_board
+
+        return {"items": etl_board.unseen(self.root)}
+
+    @_safe
+    def etl_board_seen(self, ids: list[str]) -> dict:
+        from lecturehub.index import etl_board
+
+        return {"seen": etl_board.mark_seen(self.root, list(ids))}
 
     @_safe
     def etl_file_take(self, file_id: int, beside: bool = False, allow_big: bool = False) -> dict:
@@ -1010,6 +1053,7 @@ class Library:
                     pass
             with self._open() as connection, connection:
                 etl = calendar_events.import_etl(connection, self.root / "_lecturehub" / "etl" / "assignments.json")
+            board_new = self.etl_board_auto()  # course boards once a day; new posts are told (user 2026-11-20)
             from datetime import datetime
 
             notices = self.notices_scan(datetime.now().astimezone().date())
@@ -1030,7 +1074,7 @@ class Library:
                 if unread:
                     with self._open() as connection, connection:
                         spoken = calendar_events.scan_transcripts(connection, unread)
-            return {"ok": True, "etl": etl, "notices": notices, **spoken}
+            return {"ok": True, "etl": etl, "notices": notices, "board_new": board_new, **spoken}
         except Exception as exc:  # noqa: BLE001 - e.g. the calendar table does not exist yet
             return {"ok": False, "error": str(exc)}
 

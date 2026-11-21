@@ -6,7 +6,8 @@ release is newer, the window says so and offers to open the download page in the
 and installs it themselves.
 
 Off when: the user switched it off in settings (``update_check: false``), no repository is named (``REPO`` empty,
-or ``LECTUREHUB_UPDATE_REPO`` set to an empty string), or the app runs from source (developers update with git).
+or ``LECTUREHUB_UPDATE_REPO`` set to an empty string), the app runs from source (developers update with git), or it
+runs from the Microsoft Store package (the Store updates it).
 Until the repository is public the request finds nothing, which reads as "no newer version".
 A failed check is silent: no network must never look like a problem with the app.
 """
@@ -39,8 +40,15 @@ def parse(text: str) -> tuple[int, int, int] | None:
     return tuple(int(part) for part in found.groups()) if found else None
 
 
+def _possible() -> bool:
+    """A frozen build that is not the Store package (the Store updates its own apps) and has a repository."""
+    from . import package
+
+    return bool(repo()) and bool(getattr(sys, "frozen", False)) and not package.packaged()
+
+
 def enabled() -> bool:
-    return bool(repo()) and settings.get("update_check", True) is not False and bool(getattr(sys, "frozen", False))
+    return _possible() and settings.get("update_check", True) is not False
 
 
 def set_enabled(on: bool) -> dict:
@@ -56,7 +64,7 @@ def status() -> dict:
     latest = parse(seen.get("latest", ""))
     current = parse(__version__)
     available = bool(latest and current and latest > current)
-    return {"ok": True, "current": __version__, "possible": bool(repo()) and bool(getattr(sys, "frozen", False)),
+    return {"ok": True, "current": __version__, "possible": _possible(),
             "on": settings.get("update_check", True) is not False,
             "available": available, "latest": seen.get("latest", "") if available else "",
             "url": seen.get("url", "") if available else ""}
@@ -66,7 +74,9 @@ def check(*, now: float | None = None, opener=urllib.request.urlopen, force: boo
     """Ask GitHub when a day has passed since the last answer (or ``force``); returns ``status()``."""
     from lecturehub import __version__
 
-    if not enabled() and not (force and repo()):
+    from . import package
+
+    if not enabled() and not (force and repo() and not package.packaged()):
         return status()
     now = time.time() if now is None else now
     seen = settings.get("update_seen") or {}

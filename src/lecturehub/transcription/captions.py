@@ -134,6 +134,44 @@ def device_source(mode: str, out: Callable[[bytes], None], stop: threading.Event
         audio.terminate()
 
 
+TARGET_DB = -26.0             # the louder 100 ms pieces of speech are brought to about this level
+MAX_GAIN_DB = 24.0
+LIMIT = 32000                 # no sample past this after the gain
+
+
+class AutoGain:
+    """Raises a quietly picked-up room before the audio goes to Gemini/Chirp (user 2026-11-20: "글이 거의 안
+    나옴" — one course heard from the back of the room came in at about -52 dB and Gemini Live gave two lines in nine
+    minutes; transcription_lessons: Google gave empty pieces at -47 dB until the level was raised). The level is read from the
+    louder pieces of the last 5 s, so pauses do not pump the noise up; the gain rises 1 dB per piece and falls
+    3 dB, never past +24 dB, and a peak limiter keeps it from clipping. Only what is sent changes; the recorder
+    keeps its own untouched audio."""
+
+    def __init__(self, window: int = 50):
+        from collections import deque
+
+        self.levels: deque[float] = deque(maxlen=window)
+        self.gain_db = 0.0
+
+    def __call__(self, piece: bytes) -> bytes:
+        x = np.frombuffer(piece, dtype=np.int16).astype(np.float32)
+        if not len(x):
+            return piece
+        rms = float(np.sqrt(np.mean(x ** 2)))
+        if rms >= 1.0:  # digital silence (a muted mic) says nothing about the level
+            self.levels.append(20 * np.log10(rms / 32768))
+        if len(self.levels) >= 10:
+            want = min(MAX_GAIN_DB, max(0.0, TARGET_DB - float(np.percentile(self.levels, 90))))
+            self.gain_db += max(-3.0, min(1.0, want - self.gain_db))
+        if self.gain_db < 0.5:
+            return piece
+        y = x * 10 ** (self.gain_db / 20)
+        peak = float(np.max(np.abs(y)))
+        if peak > LIMIT:
+            y *= LIMIT / peak
+        return np.clip(y, -32768, 32767).astype(np.int16).tobytes()
+
+
 # ---------------------------------------------------------------- cutting
 class Segmenter:
     """Collects 100 ms pieces and cuts at a pause 15–25 s in (or at the quietest moment at 25 s)."""
@@ -305,6 +343,7 @@ class Board:
     errors: list = field(default_factory=list)
     state: str = "running"
     hints: int = 0
+    gain_db: float = 0.0  # how much AutoGain raises the sound sent (shown in live.json)
     lock: threading.Lock = field(default_factory=threading.Lock)
     _written_at: float = 0.0
 
@@ -389,7 +428,7 @@ class Board:
             self._written_at = now
             status = {"state": self.state, "pid": os.getpid(), "course": self.course,
                       "started_at": self.started.isoformat(timespec="seconds"), "elapsed_s": round(self.elapsed(), 1),
-                      "engines": self.engines, "hints": self.hints, "interim": self.interim, "lines": self.lines[-60:],
+                      "engines": self.engines, "hints": self.hints, "gain_db": self.gain_db, "interim": self.interim, "lines": self.lines[-60:],
                       "line_count": len(self.lines), "errors": self.errors, "file": str(self.text_path),
                       "quick": self.quick_recent[-60:],
                       "quick_file": "" if self.solo else str(self.quick_path)}
@@ -412,7 +451,7 @@ def _syllables(text: str) -> int:
 def run(root: Path, course: str, *, source: Callable[[Callable[[bytes], None], threading.Event], None],
         recognize: Callable[[bytes], str] | None, gemini_key: str | None, stop: threading.Event | None = None,
         say: Callable[[str], None] | None = None, quick_factory=GeminiLive, quick_on: bool = True,
-        hints: int = 0) -> dict:
+        hints: int = 0, level: bool = True) -> dict:
     """Run until the source ends, ``stop`` is set, a ``stop`` file appears, or MAX_HOURS pass.
 
     With a Gemini key, Gemini Live can be switched while running: a ``quick.on`` / ``quick.off`` file in the captions
@@ -453,6 +492,7 @@ def run(root: Path, course: str, *, source: Callable[[Callable[[bytes], None], t
         worker.start()
     segmenter = Segmenter(lambda audio, a, b: pieces.put((audio, a, b)))
     live = {"quick": None, "ended": [], "checked": 0.0, "paused": False, "quick_before": False}
+    gain = AutoGain() if level else None
     for name in ("quick.on", "quick.off", "pause.on", "pause.off"):
         (board.dir / name).unlink(missing_ok=True)
 
@@ -507,6 +547,10 @@ def run(root: Path, course: str, *, source: Callable[[Callable[[bytes], None], t
                     else:
                         quick_switch(on)
         if not live["paused"]:  # flags first, so a pause holds back the piece that came with it
+            if gain is not None:
+                piece = gain(piece)
+                if abs(gain.gain_db - board.gain_db) >= 1.0:
+                    board.gain_db = round(gain.gain_db, 1)
             if recognize:
                 segmenter.add(piece)
             if live["quick"] is not None:
