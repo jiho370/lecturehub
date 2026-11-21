@@ -66,8 +66,9 @@ def run(*, window: bool = False, keep: bool = False) -> dict:
         _step(results, "도우미 작업 폴더", _agent_workspace)
         _step(results, "문제 보고 파일", lambda: _report(scratch, root_holder.get("root")))
         if window:  # last: it points the temporary settings at the trial semester
-            _step(results, "실제 화면 걷기(숨김 창: 회차·녹음·정리본·설정·미니 창·주소 고정)",
+            _step(results, "실제 화면 걷기(숨김 창: 회차·녹음·정리본·설정·알림 때 만드는 미니 창·주소 고정)",
                   lambda: _window(trial.get("root")))
+        _step(results, "앱 모듈 모두 불러오기", _all_modules)  # after the window, so its start-up time stays comparable
     finally:
         for name, value in saved.items():
             if value is None:
@@ -91,6 +92,38 @@ def _imports() -> str:
     for name in REQUIRED_MODULES:
         importlib.import_module(name)
     return f"{len(REQUIRED_MODULES)}개"
+
+
+def _all_modules() -> str:
+    """Every module of the app's own package imports in THIS program. The window and the worker are separate exes,
+    and background jobs run ``LectureHubWorker.exe -m lecturehub.<module>``: a module the build left out, or one
+    that needs a left-out library when it is imported, fails here instead of on a user's PC."""
+    import importlib
+    import pkgutil
+
+    import lecturehub
+
+    from importlib.resources import files
+
+    names = [m.name for m in pkgutil.walk_packages(lecturehub.__path__, "lecturehub.")]
+    # lecturehub.ui has no __init__.py: walk_packages skips such a folder when the modules are loose files
+    for folder in files("lecturehub").iterdir():
+        name = f"lecturehub.{folder.name}"
+        if folder.is_dir() and folder.name.isidentifier() and name not in names:
+            package = importlib.import_module(name)
+            names += [name] + [m.name for m in pkgutil.walk_packages(getattr(package, "__path__", []), name + ".")]
+    names = [name for name in dict.fromkeys(names) if not name.endswith("__main__")]
+    failed = []
+    for name in names:
+        try:
+            importlib.import_module(name)
+        except Exception as exc:  # noqa: BLE001 - collect them all
+            failed.append(f"{name}: {type(exc).__name__}: {str(exc)[:120]}")
+    if failed:
+        raise RuntimeError(f"불러오지 못한 모듈 {len(failed)}개: {failed[:5]}")
+    if len(names) < 50:
+        raise RuntimeError(f"앱 모듈이 {len(names)}개뿐입니다(목록을 읽지 못함)")
+    return f"{len(names)}개"
 
 
 def _forbidden() -> str:
@@ -248,8 +281,12 @@ def _window(trial_root: Path | None = None) -> str:
     """Hidden windows with the REAL pages and the REAL API on the trial semester (fake sound engine): the main page
     must finish starting, open a lecture with its sound and its note, and open the settings, without one thing
     being blocked by the page's own security policy and without a script error; the small recording window must
-    draw itself; and the main window must refuse to leave the app's page. This is what would catch a policy (or a
-    packaging slip) that breaks a window while every unit test still passes."""
+    be made the way the app makes it for a notice (after `webview.start`, from another thread, through
+    `Api._mini_window`), draw itself and stay on its page; and the main window must refuse to leave the app's page.
+    This is what would catch a policy (or a packaging slip) that breaks a window while every unit test still passes.
+
+    Nothing is shown: the small window is not put in front of the main one here (`Api._show_mini`), because
+    showing a hidden window makes it visible on the build machine and on the PC that runs `--smoke`."""
     import threading
 
     import webview
@@ -280,11 +317,8 @@ def _window(trial_root: Path | None = None) -> str:
     refused: list[str] = []
     window = webview.create_window("Lecture Hub self-check", url=str(WEB / "index.html"), js_api=api, hidden=True,
                                    width=1400, height=900)
-    mini = webview.create_window("Lecture Hub self-check mini", url=str(WEB / "mini.html"), js_api=api, hidden=True,
-                                 width=340, height=150)
-    api._main, api._mini = window, mini
+    api._main = window  # the small window is NOT made here: the app makes it on the first notice (below)
     guard_navigation(window, on_refused=refused.append)  # as the app does (ui/app.py main)
-    guard_navigation(mini)
 
     def until(expression: str, seconds: float, page=window) -> bool:
         end = time.monotonic() + seconds
@@ -313,10 +347,24 @@ def _window(trial_root: Path | None = None) -> str:
             if trial_root is not None:
                 time.sleep(1.5)  # late violations (images, fonts) arrive after the screen is drawn
                 seen["broken_images"] = window.evaluate_js(_BROKEN_IMAGES)
+            # the small window, made as the app makes it for a notice: after start, on this (non-main) thread, by
+            # Api._mini_window with its lock, address guard and closing handler
+            if api._mini is not None:
+                seen["error"] = "미니 창이 알림 전에 이미 만들어져 있습니다"
+                return
+            mini = api._mini_window()
+            if mini is None or api._mini is not mini or api._mini_window() is not mini:
+                seen["error"] = "미니 창을 앱과 같은 방법(시작 뒤, 알림 때)으로 만들지 못했습니다"
+                return
             if not mini.events.loaded.wait(READY_WAIT_S) or not until(_MINI_DRAWN, 40, mini):
                 seen["error"] = "미니 녹음 창이 그려지지 않았습니다"
                 return
-            seen["steps"].append("미니 창")
+            mini.evaluate_js(f"location.href = {json.dumps(_LEAVE_TO)}")  # its guard was attached after start
+            time.sleep(3)
+            if not until("location.pathname.indexOf('mini.html') >= 0", 5, mini):
+                seen["error"] = "미니 창이 앱 화면이 아닌 주소로 가는 것을 막지 못했습니다"
+                return
+            seen["steps"].append("미니 창(알림 때 만듦)")
             # last, because a window that did leave is of no further use: the app's page must not be left
             window.evaluate_js(f"location.href = {json.dumps(_LEAVE_TO)}")
             end = time.monotonic() + 20
@@ -329,11 +377,13 @@ def _window(trial_root: Path | None = None) -> str:
         except Exception as exc:  # noqa: BLE001
             seen["error"] = f"{type(exc).__name__}: {exc}"
         finally:
+            api._quitting = True  # closing the small window must not bring the main one forward (_on_mini_closing)
             try:
                 backend.stop_live_helpers()
             finally:
                 try:
-                    mini.destroy()
+                    if api._mini is not None:
+                        api._mini.destroy()
                 finally:
                     window.destroy()
 

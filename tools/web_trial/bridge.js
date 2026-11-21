@@ -244,7 +244,7 @@
     probe: () => ({ ok: true }),
     suggest_course: () => ({ course: COURSE }),  // the trial timetable's class, whatever day the page is opened
     sidebar_state: () => ({ ok: true }), set_selection: () => ({ ok: true }), notices_seen: () => ({ ok: true }),
-    class_reminder_set: () => ({ ok: true }), show_mini: () => ({ ok: true }),
+    class_reminder_set: () => ({ ok: true }),
   };
   function answer(name, args) {
     if (name in LIVE) return LIVE[name](...args);

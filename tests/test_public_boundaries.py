@@ -43,3 +43,19 @@ def test_EDITION_002_absent_module_helpers_and_native_consent_are_gated():
         assert api.consent_confirm(provider, "synthetic")["ok"] is False
     with pytest.raises(ValueError): api._memorizer()
     with pytest.raises(ValueError): object.__new__(Library).assignment_notice()
+
+
+def test_EDITION_002_public_edition_has_no_course_board_reader(tmp_path, monkeypatch):
+    """The LearningX board is read through its unpublished API, so the public edition leaves it out (user 2026-11-21):
+    the export deletes index/etl_board.py, and nothing in the window may import it."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "lecturehub.index.etl_board", None)  # import fails like in the export
+    library = object.__new__(Library)
+    library.root = tmp_path
+    board = library.etl_board()
+    assert "posts" not in board and "post_check" not in board
+    assert library.etl_board_check()["ok"] is False
+    assert library.etl_board_auto() == []
+    assert library.etl_board_new() == {"ok": True, "items": []} or library.etl_board_new()["items"] == []
+    assert library.etl_board_seen(["lxb:1"])["seen"] == 0

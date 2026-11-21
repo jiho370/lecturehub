@@ -7,30 +7,33 @@
 <style>
 /* 미니 녹음 창: 녹음 버튼 · 시간 · 레벨. 시안의 토큰과 녹음 버튼을 그대로 쓴다. */
 body{overflow:hidden}
-.mini{height:100vh;display:flex;flex-direction:column;justify-content:center;gap:10px;padding:10px 14px;background:var(--panel)}
+.mini{height:100vh;display:flex;flex-direction:column;justify-content:center;gap:10px;padding:10px 16px;background:var(--panel)}
 .mrow{display:flex;align-items:center;gap:12px}
-.mini .recbtn{height:44px;padding:0 18px;font-size:14px}
-.mini .recbtn.on{padding:0 14px 0 16px}
+.mini .recbtn{height:44px;padding:0 16px;font-size:14px}
+.mini .recbtn.on{padding:0 16px 0 16px}
 .mini .recbtn.confirm{background:var(--ink);box-shadow:none}
 .mtime{font-size:22px;font-weight:600}
 .mlevel{flex:1;height:6px;border-radius:999px;background:var(--chip);overflow:hidden}
-.mlevel i{display:block;height:100%;width:0;background:var(--accent);border-radius:999px;transition:width .15s}
+.mlevel i{display:block;height:100%;width:0;background:var(--accent);border-radius:999px;transition:width .15s var(--ease)}
 .mlevel.warn i{background:var(--warn)}
 .mfoot{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
 .mfoot .sp{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.mfoot button{display:flex;align-items:center;gap:6px;border-radius:8px;padding:3px 6px;font-size:12px;color:var(--sub)}
+.mfoot button{display:flex;align-items:center;gap:6px;border-radius:8px;padding:4px 6px;font-size:12px;color:var(--sub)}
 .mfoot button:hover{background:var(--panel-2);color:var(--ink)}
 .mfoot button:disabled{opacity:.4;pointer-events:none}
 .mfoot svg{width:15px;height:15px}
-.mnote{display:flex;align-items:center;gap:6px;font-size:12px;background:var(--chip);border-radius:8px;padding:5px 8px}
+svg.pz{width:.8em;height:.8em;margin-right:4px;vertical-align:-.05em;stroke-width:2.4}
+.mnote{display:flex;align-items:center;gap:6px;font-size:12px;background:var(--chip);border-radius:8px;padding:4px 8px}
 .mnote[hidden],.mrow[hidden],.mnote button[hidden]{display:none}
 .mfoot .sp.warn{color:var(--rec);font-weight:600}
 .mnote .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--warn)}
-.mnote button{border-radius:6px;padding:2px 7px;font-size:12px;background:var(--panel);color:var(--ink)}
+.mnote button{border-radius:8px;padding:2px 8px;font-size:12px;background:var(--panel);color:var(--ink)}
 </style>
 </head>
 <body>
 <svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
   <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
   <symbol id="i-mini" viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></symbol>
 </svg>
@@ -44,7 +47,7 @@ body{overflow:hidden}
   <div class="mfoot">
     <span class="sp" id="what"></span>
     <button id="pauseBtn" title="녹음 일시정지 / 다시 녹음" disabled>일시정지</button>
-    <button id="starBtn" title="★ 중요 표시 — 지금 시각을 표시해 두면 회차 화면에서 그 자리부터 들을 수 있습니다" disabled>★ 중요</button>
+    <button id="starBtn" title="중요 표시 — 지금 시각을 표시해 두면 회차 화면에서 그 자리부터 들을 수 있습니다" disabled><svg><use href="#i-star"/></svg><span id="starText">중요</span></button>
     <button id="pinBtn" title="다른 창 위에 항상 표시">항상 위 <span class="toggle on" id="pin"></span></button>
     <button id="bigBtn" title="큰 창으로"><svg><use href="#i-mini"/></svg>크게</button>
   </div>
@@ -53,6 +56,7 @@ body{overflow:hidden}
 (function () {
   "use strict";
   const $ = (id) => document.getElementById(id);
+  const PAUSE_ICON = '<svg class="pz" aria-hidden="true"><use href="#i-pause"/></svg>';
   const fmt = (ms) => { const s = Math.floor((ms || 0) / 1000); return [Math.floor(s / 3600), Math.floor(s % 3600 / 60), s % 60].map((n) => String(n).padStart(2, "0")).join(":"); };
   let api = null, state = {}, confirmUntil = 0, onTop = true;
   let notices = [];      // what start() said about this recording (microphone blocked, little disk room): shown until closed
@@ -122,7 +126,7 @@ body{overflow:hidden}
     $("label").textContent = arming ? "한 번 더 눌러 끝내기" : live ? "끝내기" : phase === "starting" ? "시작 중…" : phase === "stopping" || phase === "finalizing" ? "저장 중…" : "녹음 시작";
     const ms = live || phase === "stopping" ? s.elapsed_ms : (state.summary && state.summary.total_ms) || 0;
     const paused = live && !!s.paused;
-    $("time").textContent = (paused ? "⏸ " : "") + fmt(ms);
+    $("time").innerHTML = (paused ? PAUSE_ICON : "") + fmt(ms);
     $("pauseBtn").disabled = !live;
     $("starBtn").disabled = !live;
     $("pauseBtn").textContent = paused ? "다시 녹음" : "일시정지";
@@ -197,7 +201,7 @@ body{overflow:hidden}
     $("noteA").onclick = () => noteAct($("noteA").dataset.a);
     $("noteB").onclick = () => noteAct($("noteB").dataset.a);
     $("pauseBtn").onclick = () => { if (state.phase === "recording") api.pause(!(state.status && state.status.paused)); };
-    $("starBtn").onclick = async () => { const r = await api.bookmark(); if (r && r.ok) { const b = $("starBtn"); b.textContent = "★ 표시함"; setTimeout(() => { b.textContent = "★ 중요"; }, 1500); } };
+    $("starBtn").onclick = async () => { const r = await api.bookmark(); if (r && r.ok) { const b = $("starText"); b.textContent = "표시함"; setTimeout(() => { b.textContent = "중요"; }, 1500); } };
     $("pinBtn").onclick = async () => { onTop = !onTop; $("pin").classList.toggle("on", onTop); await api.set_on_top(onTop); };
     poll(++chain);
   }

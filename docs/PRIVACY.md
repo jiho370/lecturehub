@@ -47,7 +47,7 @@ AI 사용은 설정에서 끌 수 있고, 자막·전사는 해당 작업에서 
 
 ## 네트워크 연결
 
-Gemini, Groq, 수업 중 공지 찾기(httpx), eTL과 새 버전 확인(urllib), 실시간 자막 Gemini Live(websockets)의 HTTPS 연결은 Windows의 인증서 저장소를 따릅니다. 그래서 HTTPS를 검사하는 학교·회사 네트워크에서도 연결됩니다. 예외로 Chirp 자막(gRPC)은 앱에 든 인증서를 써서 그런 네트워크에서는 실패할 수 있습니다. Windows 저장소로 바꾸지 못하면 앱에 든 목록을 쓰고 앱 기록에 한 줄을 남깁니다. 앱의 메인 창은 자체 보안 정책을 두어 화면에서 나가는 네트워크 연결을 막습니다. 미니 창에는 이 정책이 없고, 두 창 모두 앱 자신의 화면 밖으로 이동하지 못하게 막습니다. 바깥 사이트 링크는 브라우저로 엽니다.
+Gemini, Groq, 수업 중 공지 찾기(httpx), eTL과 새 버전 확인(urllib), 실시간 자막 Gemini Live(websockets)의 HTTPS 연결은 Windows의 인증서 저장소를 따릅니다. 그래서 HTTPS를 검사하는 학교·회사 네트워크에서도 연결됩니다. 예외로 Chirp 자막(gRPC)은 앱에 든 인증서를 써서 그런 네트워크에서는 실패할 수 있습니다. Windows 저장소로 바꾸지 못하면 앱에 든 목록을 쓰고 앱 기록에 한 줄을 남깁니다. 앱의 메인 창은 자체 보안 정책을 두어 화면에서 나가는 네트워크 연결을 막습니다. 메인 창을 내려 둔 동안 녹음 알림이 오면 뜨는 작은 녹음 창에는 이 정책이 없고, 두 창 모두 앱 자신의 화면 밖으로 이동하지 못하게 막습니다. 바깥 사이트 링크는 브라우저로 엽니다.
 
 정책 근거: [Google 약관](https://aistudio.google.com/docs/terms), [Google Cloud 소리 데이터](https://cloud.google.com/speech-to-text/docs/data-usage-faq),
 [Groq 데이터](https://console.groq.com/docs/your-data), [Groq 신뢰 센터](https://trust.groq.com/),

@@ -129,46 +129,243 @@ def test_open_folder_only_inside_lecturehub(semester):
     assert app.open_folder(str(semester / "녹음본"))["ok"] is False
 
 
-def test_closing_the_window_while_recording_asks_first():
-    from lecturehub.ui.app import Api
+class _ClosingBackend:
+    """What ``Api._on_main_closing`` reads from the backend: is a recording running, and which one."""
 
-    class FakeBackend:
-        recording = True
-        helpers_stopped = 0
+    def __init__(self):
+        self.recording, self.session, self.helpers_stopped = True, "s1", 0
 
-        def stop_live_helpers(self):  # P-053: the Q&A helper and captions stop with the app
-            FakeBackend.helpers_stopped += 1
-            return []
+    def state(self):
+        return {"phase": "recording" if self.recording else "idle", "status": {"session_dir": self.session}}
 
-    class FakeWindow:
-        def __init__(self, answer):
-            self.answer, self.asked = answer, []
+    def stop_live_helpers(self):  # P-053: the Q&A helper and captions stop with the app
+        self.helpers_stopped += 1
+        return []
 
-        def create_confirmation_dialog(self, title, message):
-            self.asked.append(message)
-            return self.answer
 
-    class FakeMini:
-        shown = 0
+def _closing_api(monkeypatch, *, minimize_fails=False, toast_fails=False):
+    """An Api whose window commands and Windows notifications are recorded, never sent (no real window is touched)."""
+    from lecturehub.ui import app as ui_app
+    from lecturehub.ui import notify
 
-        def show(self):
-            FakeMini.shown += 1
+    backend = _ClosingBackend()
+    api = ui_app.Api(backend)
+    commands, toasts = [], []
 
-    api = Api(FakeBackend())
-    api._main, api._mini = FakeWindow(True), FakeMini()
-    api._main.hide = lambda: None
-    assert api._on_main_closing() is False and FakeMini.shown == 1  # user 2026-09-30: to the mini window, not away
-    assert api._main.asked == []
-    api._mini = None  # no mini window (older setups): ask as before
-    api._main = FakeWindow(False)
-    assert api._on_main_closing() is False and "녹음은 계속" in api._main.asked[0]
-    assert FakeBackend.helpers_stopped == 0  # stayed open: helpers keep going
-    api._main = FakeWindow(True)
-    assert api._on_main_closing() is True and FakeBackend.helpers_stopped == 1
-    FakeBackend.recording = False
-    api._main = FakeWindow(False)
-    assert api._on_main_closing() is True and api._main.asked == [] and FakeBackend.helpers_stopped == 2
+    def command(sw):
+        commands.append(sw)
+        if minimize_fails:
+            raise OSError("no window")
+        return True
 
+    def toast(title, body, **kw):
+        toasts.append((title, body))
+        if toast_fails:
+            raise RuntimeError("no notification area")
+        return True
+
+    api._show_main_window = command
+    monkeypatch.setattr(notify, "toast", toast)
+    return api, backend, commands, toasts
+
+
+def test_closing_the_window_while_recording_minimizes_it_and_says_why_once_per_recording(monkeypatch):
+    """User 2026-09-30: a recording nobody can see runs for hours, so the app does not close while it records.
+    Since the mini window went (2026-11-21) the window goes to the taskbar instead, with one notification."""
+    from lecturehub.ui import app as ui_app
+
+    api, backend, commands, toasts = _closing_api(monkeypatch)
+    assert api._on_main_closing() is False
+    assert commands == [ui_app.SW_MINIMIZE] and toasts == [ui_app.CLOSE_WHILE_RECORDING]
+    assert toasts[0] == ("녹음 중입니다", "창을 닫지 않고 작업 표시줄로 내렸습니다. 녹음을 끝낸 뒤에 닫을 수 있습니다.")
+    assert api._on_main_closing() is False  # again during the same recording: down again, told only once
+    assert commands == [ui_app.SW_MINIMIZE] * 2 and len(toasts) == 1
+    assert backend.helpers_stopped == 0 and api._quitting is False  # stayed open: helpers keep going
+    backend.session = "s2"  # the next recording is told again
+    assert api._on_main_closing() is False and len(toasts) == 2
+
+
+def test_closing_the_window_when_not_recording_closes_and_stops_the_helpers(monkeypatch):
+    api, backend, commands, toasts = _closing_api(monkeypatch)
+    backend.recording = False
+    assert api._on_main_closing() is True
+    assert backend.helpers_stopped == 1 and api._quitting is True and commands == [] and toasts == []
+
+
+def test_closing_while_quitting_is_not_held_back(monkeypatch):
+    api, _backend, commands, toasts = _closing_api(monkeypatch)
+    api._quitting = True  # e.g. the first-run screen closing the app
+    assert api._on_main_closing() is True and commands == [] and toasts == []
+
+
+@pytest.mark.parametrize(("minimize_fails", "toast_fails"), [(True, False), (False, True), (True, True)])
+def test_a_failing_minimize_or_notification_still_refuses_the_close(monkeypatch, minimize_fails, toast_fails):
+    """pywebview lets the window close when the closing handler raises, so nothing may escape it."""
+    api, backend, commands, toasts = _closing_api(monkeypatch, minimize_fails=minimize_fails, toast_fails=toast_fails)
+    assert api._on_main_closing() is False
+    assert commands and toasts and backend.helpers_stopped == 0
+
+
+def test_closing_while_recording_does_not_fail_when_the_state_cannot_be_read(monkeypatch):
+    api, backend, commands, _toasts = _closing_api(monkeypatch)
+    backend.state = lambda: (_ for _ in ()).throw(RuntimeError("state"))
+    assert api._on_main_closing() is False and commands  # minimized; the notification part was skipped and logged
+
+
+class _Handlers(list):
+    """A pywebview event: `+=` adds a handler."""
+
+    def __iadd__(self, handler):
+        self.append(handler)
+        return self
+
+
+class _FakeWindow:
+    """A pywebview window as the app uses it: show/hide, events, and (for the small one) on_top."""
+
+    def __init__(self, calls, name):
+        self.calls, self.name, self.on_top = calls, name, True
+        self.events = type("Events", (), {})()
+        self.events.closing = _Handlers()
+
+    def show(self):
+        self.calls.append(f"{self.name}.show")
+
+    def hide(self):
+        self.calls.append(f"{self.name}.hide")
+
+    def destroy(self):
+        self.calls.append(f"{self.name}.destroy")
+
+
+def _notice_api(monkeypatch, *, create_fails=False, show_fails=False):
+    """An Api with a fake main window and a fake ``webview.create_window``; nothing real is opened."""
+    import types
+
+    from lecturehub.ui import app as ui_app
+
+    api, _backend, commands, _toasts = _closing_api(monkeypatch)
+    calls, made, guarded = [], [], []
+    api._main = _FakeWindow(calls, "main")
+
+    def create_window(title, url=None, **kw):
+        if create_fails:
+            raise RuntimeError("WebView2 could not start")
+        window = _FakeWindow(calls, "mini")
+        if show_fails:
+            window.show = lambda: (_ for _ in ()).throw(RuntimeError("show"))
+        made.append({"title": title, "url": url, **kw, "window": window})
+        return window
+
+    monkeypatch.setitem(sys.modules, "webview", types.SimpleNamespace(create_window=create_window))
+    monkeypatch.setattr(ui_app, "guard_navigation", lambda window, on_refused=None: guarded.append(window))
+    api._main_hwnd = lambda *title: 0  # nothing to flash or restore for real
+    return api, calls, made, guarded, commands
+
+
+def _notice(api, kind="class_over"):
+    """The attention hook runs on its own thread (backend._attention): pywebview makes windows only there."""
+    import threading
+    import winsound
+
+    saved, winsound.MessageBeep = winsound.MessageBeep, lambda kind: None
+    try:
+        worker = threading.Thread(target=api._attention, args=(kind,))
+        worker.start()
+        worker.join(10)
+    finally:
+        winsound.MessageBeep = saved
+
+
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="the attention path is Windows-only")
+
+
+@windows_only
+def test_a_notice_while_minimized_makes_the_small_window_once_and_shows_it(monkeypatch):
+    """Owner 2026-11-21: a notice during a recording goes to the small window, not the whole main window over the
+    slides. It is not made at start-up (about 68 MB) but on the first notice that needs it, and then kept."""
+    from lecturehub.ui import app as ui_app
+
+    api, calls, made, guarded, commands = _notice_api(monkeypatch)
+    api._main_out_of_sight = lambda: True
+    assert api._mini is None  # nothing at start
+    _notice(api)
+    assert len(made) == 1 and made[0]["url"].endswith("mini.html") and made[0]["title"] == ui_app.MINI_TITLE
+    assert made[0]["hidden"] is True and made[0]["on_top"] is True and made[0]["js_api"] is api
+    mini = made[0]["window"]
+    assert guarded == [mini] and mini.events.closing == [api._on_mini_closing]
+    assert calls == ["main.hide", "mini.show"] and commands == []
+    _notice(api, "next_class")  # the second notice reuses it
+    assert len(made) == 1 and calls == ["main.hide", "mini.show"] * 2
+    assert api._on_mini_closing() is False and calls[-2:] == ["mini.hide", "main.show"]  # closing it: back
+    api._quitting = True
+    assert api._on_mini_closing() is True
+    api._on_main_closed()
+    assert calls[-1] == "mini.destroy"
+
+
+@windows_only
+def test_notices_racing_make_one_small_window(monkeypatch):
+    import threading
+
+    api, _calls, made, _guarded, _commands = _notice_api(monkeypatch)
+    api._main_out_of_sight = lambda: True
+    workers = [threading.Thread(target=api._mini_window) for _ in range(8)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(10)
+    assert len(made) == 1
+
+
+@windows_only
+@pytest.mark.parametrize(("create_fails", "show_fails"), [(True, False), (False, True)])
+def test_a_small_window_that_cannot_be_made_or_shown_brings_back_the_main_window(monkeypatch, create_fails,
+                                                                                 show_fails):
+    from lecturehub.ui import app as ui_app
+
+    api, _calls, _made, _guarded, commands = _notice_api(monkeypatch, create_fails=create_fails, show_fails=show_fails)
+    api._main_out_of_sight = lambda: True
+    _notice(api)  # nothing raised into the engine's thread
+    assert commands == [ui_app.SW_RESTORE]
+
+
+@windows_only
+def test_a_notice_with_the_main_window_in_sight_makes_nothing(monkeypatch):
+    api, calls, made, _guarded, commands = _notice_api(monkeypatch)
+    api._main_out_of_sight = lambda: False
+    _notice(api)
+    assert made == [] and calls == [] and commands == [] and api._mini is None
+    api._main_out_of_sight = lambda: (_ for _ in ()).throw(OSError("user32"))
+    _notice(api, "stalled")  # the check itself failing does not raise either
+
+
+def test_the_small_window_is_never_made_on_the_main_thread_or_while_quitting(monkeypatch):
+    """pywebview only queues a window made on the main thread (it is shown at the next start, i.e. never)."""
+    api, _calls, made, _guarded, _commands = _notice_api(monkeypatch)
+    assert api._mini_window() is None and made == []
+    api._quitting = True
+    import threading
+
+    seen = []
+    worker = threading.Thread(target=lambda: seen.append(api._mini_window()))
+    worker.start()
+    worker.join(10)
+    assert seen == [None] and made == []
+
+
+def test_back_to_the_main_window_unminimizes_it(monkeypatch):
+    """[크게] after a notice that came while the main window was minimized: Show() alone would leave it minimized."""
+    from lecturehub.ui import app as ui_app
+
+    api, calls, _made, _guarded, commands = _notice_api(monkeypatch)
+    api._main_hwnd = lambda *title: 1
+    import ctypes
+
+    iconic = type("U", (), {"IsIconic": staticmethod(lambda hwnd: 1)})()
+    monkeypatch.setattr(ctypes, "windll", type("W", (), {"user32": iconic})(), raising=False)
+    assert api.show_main() == {"ok": True}
+    assert calls == ["main.show"] and commands == [ui_app.SW_RESTORE]
 
 def test_blank_course_transcription_asks_each_time_and_passes_consent_once(semester, monkeypatch):
     spawned = []
@@ -826,6 +1023,57 @@ def test_engines_overview_counts_whisper_audio_and_mai_chunks(semester, monkeypa
     assert view["whisper"]["usage"]["day_left_s"] == 28_800 - 2400
     assert view["mai"]["usage"]["today_chunks"] == 1 and view["mai"]["usage"]["today_rejections"] == 1
     assert "quota" in view["google"]
+
+
+def test_usage_state_cache_skips_unchanged_files_and_follows_changes(tmp_path, monkeypatch):
+    from lecturehub.transcription import usage
+
+    def write(job, **extra):
+        path = tmp_path / "_lecturehub" / "jobs_whisper" / job / "state.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"job_id": job, "provider": "whisper_groq", **extra}), encoding="utf-8")
+        return path
+
+    reads = []
+    real = usage.read_json
+    monkeypatch.setattr(usage, "read_json", lambda p, *a, **k: (reads.append(p), real(p, *a, **k))[1])
+    p1, p2 = write("job-a", state="done"), write("job-b", state="queued")
+    first = usage._jobs(tmp_path, "whisper_groq")
+    assert [s["job_id"] for s in first] == ["job-a", "job-b"] and len(reads) == 2
+    assert usage._jobs(tmp_path, "whisper_groq") == first and len(reads) == 2  # unchanged: stat only
+    # a rewritten file is picked up (mtime bumped explicitly, so the test does not depend on timer resolution)
+    write("job-b", state="done", extra_field="longer content")
+    os.utime(p2, ns=(1_000_000_000, 2_000_000_000))
+    states = {s["job_id"]: s for s in usage._jobs(tmp_path, "whisper_groq")}
+    assert states["job-b"]["state"] == "done" and len(reads) == 3
+    # a deleted job leaves the results and the cache
+    p1.unlink()
+    p1.parent.rmdir()
+    assert [s["job_id"] for s in usage._jobs(tmp_path, "whisper_groq")] == ["job-b"]
+    assert str(p1) not in usage._STATE_CACHE and str(p2) in usage._STATE_CACHE
+    # another provider's folder with the same name prefix ("jobs" vs "jobs_whisper") does not wipe these entries
+    other = tmp_path / "_lecturehub" / "jobs" / "job-g" / "state.json"
+    other.parent.mkdir(parents=True)
+    other.write_text(json.dumps({"job_id": "job-g"}), encoding="utf-8")
+    before = len(reads)
+    assert [s["job_id"] for s in usage._jobs(tmp_path, "gemini_transcribe")] == ["job-g"]
+    assert str(p2) in usage._STATE_CACHE
+    usage._jobs(tmp_path, "whisper_groq")
+    assert len(reads) == before + 1  # only job-g was read
+
+
+def test_usage_state_cache_does_not_hide_a_repaired_file(tmp_path, monkeypatch):
+    from lecturehub.transcription import store, usage
+
+    monkeypatch.setattr(store, "_keep_broken", lambda path: None)
+    path = tmp_path / "_lecturehub" / "jobs_whisper" / "job-c" / "state.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{ not json", encoding="utf-8")
+    assert usage._jobs(tmp_path, "whisper_groq") == []  # broken reads as absent (empty state, filtered out)
+    assert str(path) not in usage._STATE_CACHE
+    path.write_text(json.dumps({"job_id": "job-c", "provider": "whisper_groq"}), encoding="utf-8")
+    os.utime(path, ns=(1_000_000_000, 3_000_000_000))
+    assert [s["job_id"] for s in usage._jobs(tmp_path, "whisper_groq")] == ["job-c"]
 
 
 def test_recording_engines_say_why_a_button_is_off(semester, monkeypatch):

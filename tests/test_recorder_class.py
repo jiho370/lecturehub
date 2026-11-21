@@ -145,6 +145,9 @@ def test_console_close_writes_stop_json_before_handler_returns(tmp_path, monkeyp
     def close_window():
         while not guards or session.session_dir is None:
             time.sleep(0.01)
+        deadline = time.monotonic() + 8  # a slow CI runner: wait for the first samples instead of a fixed 0.2 s
+        while time.monotonic() < deadline and not (session.writer and session.writer.total_samples > 0):
+            time.sleep(0.01)
         time.sleep(0.2)
         seen["returned"] = guards[0]._body(2)
         seen["stop_json_at_return"] = (session.session_dir / "stop.json").exists()
@@ -152,7 +155,7 @@ def test_console_close_writes_stop_json_before_handler_returns(tmp_path, monkeyp
     closer = threading.Thread(target=close_window)
     closer.start()
     report = recorder_cli._run_session(source, session, duration=10)
-    closer.join(5)
+    closer.join(10)
     assert seen == {"returned": True, "stop_json_at_return": True}
     assert (report["cause"], report["certainty"], report["trigger"]) == (
         "user_stop", "estimated", "console_close")

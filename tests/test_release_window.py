@@ -294,16 +294,38 @@ def test_a_window_whose_engine_control_cannot_be_reached_still_opens():
         attach()  # written to the log, never raised: the window opens as before
 
 
+def test_a_window_made_after_start_is_guarded_at_once():
+    """The small window is made on the first notice, after webview.start: pywebview has already raised its
+    before_show, so the guard is attached right away instead of waiting for an event that will not come."""
+    window, control = _window()
+
+    class Shown(_Hook):
+        def is_set(self):
+            return True
+
+    window.events.before_show = Shown()
+    ui_app.guard_navigation(window)
+    (handler,) = control.NavigationStarting.handlers
+    args = _Holder(Uri="https://attacker.example/", Cancel=False)
+    handler(control, args)
+    assert args.Cancel is True
+
+
 def test_the_app_guards_both_of_its_windows():
-    """Both windows carry the whole API. (That the guard works in the real engine is the last step of the
+    """Both windows carry the whole API: the main one from the start, the small one when a notice first needs it
+    (Api._mini_window → _create_mini). (That the guard works in the real engine is the last step of the
     hidden-window self-check: core/selfcheck.py.)"""
     import inspect
 
     from lecturehub.core import selfcheck
 
-    assert "for each in (main_window, mini):" in inspect.getsource(ui_app.main)
-    assert "guard_navigation(each)" in inspect.getsource(ui_app.main)
+    main = inspect.getsource(ui_app.main)
+    assert "guard_navigation(main_window)" in main and main.count("create_window(") == 1  # no small window at start
+    made = inspect.getsource(ui_app._create_mini)
+    assert "guard_navigation(mini)" in made and "api._on_mini_closing" in made
     walk = inspect.getsource(selfcheck._window)
+    # the self-check makes the small window the app's way (after start, through Api._mini_window), not up front
+    assert walk.count("create_window(") == 1 and "api._mini_window()" in walk and "_show_mini" not in walk.split('"""')[2]
     assert "guard_navigation(window, on_refused=refused.append)" in walk and "_LEAVE_TO" in walk
 
 

@@ -3,6 +3,8 @@
 (function () {
   "use strict";
   const $ = (id) => document.getElementById(id);
+  // icons come from the <symbol> sprite in index.html, never from text glyphs (unslop polish 2026-11-21)
+  const ic = (name) => `<svg class="ic" aria-hidden="true"><use href="#i-${name}"/></svg>`;
   // write only a changed value: the 250 ms poll must not touch the DOM when nothing moved (review #3)
   const setp = (o, k, v) => { if (typeof o[k] === "boolean") v = !!v; if (o[k] !== v) o[k] = v; };
   const sett = (el, v) => setp(el, "textContent", String(v));
@@ -344,7 +346,7 @@
     const btn = $("capBtn"), running = !!(s && s.running);
     btn.classList.toggle("on", running);
     cap.paused = !!(s && s.paused);
-    btn.textContent = running ? `자막 ${cap.paused ? "⏸" : "●"} ${clock((s.elapsed_s || 0) * 1000)}` : "자막";
+    btn.innerHTML = running ? `자막 ${cap.paused ? ic("pause") : '<i class="live-dot"></i>'} ${clock((s.elapsed_s || 0) * 1000)}` : "자막";
     if (s) cap.status = s;
     renderLive();
     if (!cap.shown || !s) return;
@@ -588,7 +590,7 @@
       qa.last = ""; qa.heard = ""; qa.fromHtml = ""; qa.deck = "";  // a new (re-opened) panel is empty: draw everything again
       p.innerHTML = `<header><b>질의응답 도우미</b><span id="qaInfo"></span><span class="sp"></span><button class="ghost" id="qaEnd" title="도우미를 끕니다">끝내기</button><button class="ghost" id="qaClose" title="패널만 숨깁니다 — 도우미는 켜진 채로, [질의응답]을 누르면 다시 보입니다">숨기기</button></header>
         <div class="qa-deck" id="qaDeck" hidden><div class="qa-slide"><img id="qaSlide" alt=""><p class="hint" id="qaSlideNote"></p></div>
-          <div class="qa-deck-bar"><button class="ghost" id="qaPrev" title="이전 슬라이드 (← · PageUp)">◀</button><span id="qaPage"></span><input id="qaGo" inputmode="numeric" placeholder="번호" title="슬라이드 번호로 가기 (Enter)"><button class="ghost" id="qaNext" title="다음 슬라이드 (→ · PageDown)">▶</button></div></div>
+          <div class="qa-deck-bar"><button class="ghost" id="qaPrev" title="이전 슬라이드 (← · PageUp)" aria-label="이전 슬라이드">${ic("left")}</button><span id="qaPage"></span><input id="qaGo" inputmode="numeric" placeholder="번호" title="슬라이드 번호로 가기 (Enter)"><button class="ghost" id="qaNext" title="다음 슬라이드 (→ · PageDown)" aria-label="다음 슬라이드">${ic("right")}</button></div></div>
         <div class="qa-fromrow" id="qaFrom"></div><div class="qa-heard" id="qaHeard"></div>
         <div class="qa-row"><button class="ghost qa-mark" id="qaMark" title="지금부터 하는 말을 질문으로 (F7) — 위의 자막 줄을 눌러 그 줄부터로 고를 수도 있습니다">질문 시작 <small>F7</small></button><button class="primary qa-ask" id="qaAsk">HELP <small>F8</small></button>
           <form class="qa-type" id="qaTypeForm"><input id="qaType" placeholder="질문을 직접 쳐도 됩니다 — Enter" autocomplete="off"><button class="ghost">보내기</button></form></div>
@@ -661,7 +663,7 @@
     return (list || []).map((x) => `<div class="qa-prep"><p class="qa-q">준비한 답 · ${esc(x.id)} · ${esc(x.q)}${x.asked ? " · 실제로 받은 질문" : ""}` +
       `${x.via === "claude" ? ` <span class="qa-via" title="Claude가 질문의 뜻을 보고 고른 예상 질문">Claude가 고름</span>` : ""}</p>` +
       `<p class="qa-a">${esc(x.answer)}</p>${(x.basis || []).slice(0, 2).map(why).join("")}` +
-      `${x.caution ? `<p class="qa-warn">⚠ ${esc(x.caution)}</p>` : ""}</div>`).join("");
+      `${x.caution ? `<p class="qa-warn">${ic("alert")} ${esc(x.caution)}</p>` : ""}</div>`).join("");
   }
   function qaCard(c) {
     if (c.error && !c.answer && !(c.prepared || []).length) return `<div class="qa-card err">${esc(c.error)}</div>`;
@@ -673,7 +675,7 @@
       const t = l.trim();
       if (/^질문\s*:/.test(t)) { question = t.replace(/^질문\s*:\s*/, ""); return ""; }
       if (/^답\s*:/.test(t)) { answered = true; return `<p class="qa-a">${esc(t.replace(/^답\s*:\s*/, ""))}</p>`; }
-      if (/^주의\s*:/.test(t)) return `<p class="qa-warn">⚠ ${esc(t.replace(/^주의\s*:\s*/, ""))}</p>`;
+      if (/^주의\s*:/.test(t)) return `<p class="qa-warn">${ic("alert")} ${esc(t.replace(/^주의\s*:\s*/, ""))}</p>`;
       if (/^근거\s*:?\s*$/.test(t)) return "";
       return why(t.replace(/^[-•]\s*/, ""));
     }).join("");
@@ -687,7 +689,7 @@
     if (s && s.state === "unknown") return;  // status file unreadable for a moment: keep what is on screen
     const btn = $("qaBtn"), running = !!(s && s.running);
     btn.classList.toggle("on", running);
-    btn.textContent = running ? (s.state === "loading" ? "질의응답 ● 준비 중" : "질의응답 ●") : "질의응답";
+    btn.innerHTML = running ? (s.state === "loading" ? '질의응답 <i class="live-dot"></i> 준비 중' : '질의응답 <i class="live-dot"></i>') : "질의응답";
     if (!qa.shown || !s) return;
     const p = qaPanel(), capt = s.captions || {};
     const deck = (s.pack && s.pack.deck) || "";
@@ -705,7 +707,7 @@
     p.querySelector("#qaAsk").disabled = !running || s.state !== "ready";
     qa.now = capt.running && capt.now != null ? capt.now : null; qa.polled = Date.now();
     const from = qa.from;  // the chosen question start (P-051): lines from there are marked
-    const fromHtml = from != null ? `질문 시작 ${mmss(from)} — 이 뒤의 말로 답합니다 <a data-clear="1" title="시작점 지우기">✕</a>` : "";
+    const fromHtml = from != null ? `질문 시작 ${mmss(from)} — 이 뒤의 말로 답합니다 <a data-clear="1" title="시작점 지우기" aria-label="시작점 지우기">${ic("x")}</a>` : "";
     if (fromHtml !== qa.fromHtml) { p.querySelector("#qaFrom").innerHTML = fromHtml; qa.fromHtml = fromHtml; }  // outside the scroll box: always seen
     p.classList.toggle("has-from", from != null);
     const heard = (capt.recent || []).slice(-6).map((l) => `<p class="qa-line${from != null && l.at >= from ? " sel" : ""}" data-at="${l.at}" title="이 줄부터를 질문으로"><small>${mmss(l.at)}</small>${esc(l.text)}</p>`).join("") +
@@ -827,7 +829,7 @@
       if (!open.has(f)) return html;
       let sub = extraSet.has(f) ? "" : `<div class="item sub files" data-files="${esc(f)}"><svg><use href="#i-folder"/></svg>자료</div>`;
       if (slot && !todayL) sub += `<div class="item sub" data-course="${esc(f)}"><span class="d num">오늘</span>${esc(slot.start)} 수업 · 녹음 전</div>`;
-      sub += items.map((it) => `<div class="item sub${it.id === selected ? " sel" : ""}" data-lecture="${it.id}"><span class="d num">${it.date === todayIso ? "오늘" : mdText(it.date)}</span>${esc(it.label)}<span class="meta">${it.reviewable ? "✓" : ""}</span></div>`).join("");
+      sub += items.map((it) => `<div class="item sub${it.id === selected ? " sel" : ""}" data-lecture="${it.id}"><span class="d num">${it.date === todayIso ? "오늘" : mdText(it.date)}</span>${esc(it.label)}<span class="meta">${it.reviewable ? ic("tick") : ""}</span></div>`).join("");
       return html + `<div class="subs">${sub || `<div class="item sub dim">회차 없음</div>`}</div>`;
     };
     let html = folders.filter((f) => !extraSet.has(f)).map(row).join("") +
@@ -1081,7 +1083,7 @@
       // the gaps are looked at here as well
       const warn = sum.partial || sum.finalize_error || sum.cause === "source_lost" || sum.gaps || !!twoGaps;
       let html = sum.auto_stop ? `<span class="warn"><i class="dot warn"></i>${esc(sum.auto_stop.reason)} · 소리 없는 뒷부분은 회차 화면의 [자르기]로 뺄 수 있습니다</span>` : "";
-      html += `<span class="${warn ? "warn" : ""}"><i class="dot ${warn ? "warn" : "ok"}"></i>저장됨 · <span class="num">${fmt(sum.total_ms)}</span> · 누락 ${sum.dropped_samples || 0}${sum.paused_ms ? " · 일시정지 " + fmt(sum.paused_ms) + " 제외" : ""}${gapsText(sum)}${sum.bookmarks ? " · ★ " + sum.bookmarks : ""}${twoText}</span>`;
+      html += `<span class="${warn ? "warn" : ""}"><i class="dot ${warn ? "warn" : "ok"}"></i>저장됨 · <span class="num">${fmt(sum.total_ms)}</span> · 누락 ${sum.dropped_samples || 0}${sum.paused_ms ? " · 일시정지 " + fmt(sum.paused_ms) + " 제외" : ""}${gapsText(sum)}${sum.bookmarks ? ` · ${ic("star")} ` + sum.bookmarks : ""}${twoText}</span>`;
       // the clean-up of the WAV files after the recording (either file): deleted for good on a drive without a Recycle
       // Bin, or not done and why. Said once: the counts of both files are added, the first reason is shown
       const notes = [sum.cleanup, two && two.cleanup].filter(Boolean);
@@ -1190,7 +1192,7 @@
       : tr ? `Google 전사: ${tr.label || "진행 중"}`
       : "녹음을 저장했습니다. 'Google 전사 시작'을 누르면 전사가 시작됩니다.";
     rows.push(`<div class="seg-row"><div class="t num">00:00</div><div><div class="x" style="color:var(--sub)">${first}</div></div></div>`);
-    (st.bookmarks || []).forEach((b) => rows.push(`<div class="seg-row"><div class="t num">${fmt(b.at_ms).replace(/^00:/, "")}</div><div><div class="x">★ 중요 표시</div><div class="badges"><span class="b cue">내가 표시</span></div></div></div>`));
+    (st.bookmarks || []).forEach((b) => rows.push(`<div class="seg-row"><div class="t num">${fmt(b.at_ms).replace(/^00:/, "")}</div><div><div class="x">${ic("star")} 중요 표시</div><div class="badges"><span class="b cue">내가 표시</span></div></div></div>`));
     const html = rows.join("");
     if ($("trList").dataset.h !== html) { $("trList").innerHTML = html; $("trList").dataset.h = html; }
   }
@@ -1231,12 +1233,12 @@
     const inUse = L.in_use && L.transcripts.find((t) => t.id === L.in_use.transcript_id);
     $("lvHead").innerHTML = L.transcripts.length
       ? L.transcripts.map((t) => `<span class="b${t.in_use ? " use" : ""}" title="${esc(t.source_file || "")}">${esc(t.label)}${t.in_use ? " · 사용본" : ""}</span>`).join("") +
-        (L.transcripts.length > 1 ? `<span class="switch" id="switchUse">사용본 바꾸기 ▾</span>` : "") +
-        (L.transcripts.some((t) => t.segments) ? `<span class="switch" id="saveTr" title="전사본을 .txt로 다운로드 폴더에 저장합니다(내가 고친 곳 반영)">내려받기${L.transcripts.filter((t) => t.segments).length > 1 ? " ▾" : ""}</span>` : "")
+        (L.transcripts.length > 1 ? `<span class="switch" id="switchUse">사용본 바꾸기 ${ic("down")}</span>` : "") +
+        (L.transcripts.some((t) => t.segments) ? `<span class="switch" id="saveTr" title="전사본을 .txt로 다운로드 폴더에 저장합니다(내가 고친 곳 반영)">내려받기${L.transcripts.filter((t) => t.segments).length > 1 ? " " + ic("down") : ""}</span>` : "")
       : `<span>전사본 없음</span>`;
     const R = L.range, D = R && R.decided;
     if (D && D.cut) $("lvHead").innerHTML += `<span class="b" title="원본 전체는 _lecturehub에 그대로 있습니다">녹음 범위 ${wall(R.suggest.recorded_start, wallOffset(R.suggest.pauses, D.start_ms))}–${wall(R.suggest.recorded_start, wallOffset(R.suggest.pauses, D.end_ms))} · 원본 보관${L.hidden_segments ? ` · 수업 뒤 ${L.hidden_segments}구간 숨김` : ""}</span><span class="switch" data-range="revert">되돌리기</span>`;
-    if ((L.bookmarks || []).length) $("lvHead").innerHTML += `<span class="bm-list" title="녹음 중 누른 ★ 중요 표시 — 누르면 그 시각부터 재생">★ ${L.bookmarks.map((b) => `<span class="bm" data-seek="${b.at_ms}">${clock(b.at_ms)}</span>`).join("")}</span>`;
+    if ((L.bookmarks || []).length) $("lvHead").innerHTML += `<span class="bm-list" title="녹음 중 누른 중요 표시 — 누르면 그 시각부터 재생">${ic("star")} ${L.bookmarks.map((b) => `<span class="bm" data-seek="${b.at_ms}">${clock(b.at_ms)}</span>`).join("")}</span>`;
     if ((L.orphaned_corrections || []).length) $("lvHead").innerHTML += `<span class="b cue" title="사용본이 바뀌어 자리를 못 찾은 교정입니다. 전사를 보고 다시 고쳐 주세요">교정 ${L.orphaned_corrections.length}건 다시 확인 필요</span>`;
     const media = L.media;
     if (media && media.url) {
@@ -1451,11 +1453,11 @@
     if (!p.ok) { toast(p.error); return false; }
     const files = p.trash.map((x) => "· " + x.split("\\").slice(-2).join("\\")).join("\n");
     const body = `${p.lecture ? p.lecture + " · " : ""}휴지통으로 보냅니다(${mb(p.bytes)}). [녹음 정리]에서 되살릴 수 있습니다.\n${files}` +
-      (p.transcripts ? `\n⚠ 이 녹음의 전사 ${p.transcripts}개가 앱에서 사라집니다.` : "\n이 녹음에는 전사가 없습니다.") + (p.archive_note ? `\n${p.archive_note}` : "");
+      (p.transcripts ? `\n이 녹음의 전사 ${p.transcripts}개도 앱에서 사라집니다.` : "\n이 녹음에는 전사가 없습니다.") + (p.archive_note ? `\n${p.archive_note}` : "");
     if (!(await dialog({ title: p.transcripts ? "전사가 있는 녹음입니다 — 버릴까요?" : "이 녹음을 버릴까요?", body, ok: "휴지통으로", tone: "danger" }))) return false;
     let withPair = false;
     if (p.pair) withPair = await dialog({ title: `같이 녹음한 ${p.pair.kind} 녹음도 버릴까요?`,
-      body: p.pair.transcripts ? `⚠ ${p.pair.kind} 녹음에 전사 ${p.pair.transcripts}개가 있습니다. 같이 버리면 그 전사도 사라집니다.\n보통은 [이것만]을 고르세요.` : `${p.pair.session} (전사 없음)`,
+      body: p.pair.transcripts ? `${p.pair.kind} 녹음에 전사 ${p.pair.transcripts}개가 있습니다. 같이 버리면 그 전사도 사라집니다.\n보통은 [이것만]을 고르세요.` : `${p.pair.session} (전사 없음)`,
       ok: "같이 버리기", cancel: "이것만", tone: "danger" });
     const r = await api.discard(mediaId, withPair);
     if (!r.ok) { toast(r.error); return false; }
@@ -1468,14 +1470,14 @@
     const files = p.trash.map((x) => "· " + x.split("\\").slice(-2).join("\\")).join("\n");
     const stays = [p.stays.transcripts ? `가져온 전사 ${p.stays.transcripts}개` : "", p.stays.slides ? "슬라이드 연결" : ""].filter(Boolean);
     const body = `녹음 ${p.recordings.length}개를 휴지통으로 보냅니다(${mb(p.bytes)}). [녹음 정리]에서 되살릴 수 있습니다.\n${files}` +
-      (p.transcripts ? `\n⚠ 이 녹음들의 전사 ${p.transcripts}개가 앱에서 사라집니다.` : "") +
+      (p.transcripts ? `\n이 녹음들의 전사 ${p.transcripts}개가 앱에서 사라집니다.` : "") +
       (stays.length ? `\n${stays.join("·")}은(는) 남으므로 회차는 목록에 남습니다.` : "\n회차가 목록에서 사라지고, 다시 녹음하면 이 번호로 새로 잡힙니다.");
     if (!(await dialog({ title: `${p.lecture || "이 회차"}를 버릴까요?`, body, ok: "휴지통으로", tone: "danger" }))) return false;
     let withPair = false;
     if (p.pairs.length) {
       const t = p.pairs.reduce((n, x) => n + (x.transcripts || 0), 0);
       withPair = await dialog({ title: `같이 녹음한 ${p.pairs.map((x) => x.kind).join("·")} 녹음도 버릴까요?`,
-        body: t ? `⚠ 그 녹음에 전사 ${t}개가 있습니다. 같이 버리면 그 전사도 사라집니다.` : `${p.pairs.map((x) => x.session).join(", ")} (전사 없음)`,
+        body: t ? `그 녹음에 전사 ${t}개가 있습니다. 같이 버리면 그 전사도 사라집니다.` : `${p.pairs.map((x) => x.session).join(", ")} (전사 없음)`,
         ok: "같이 버리기", cancel: "이것만", tone: "danger" });
     }
     const r = await api.lecture_discard(lectureId, withPair);
@@ -1492,7 +1494,7 @@
     if (document.querySelector(".hold-panel")) return;
     const scrim = document.createElement("div");
     scrim.className = "scrim top";
-    scrim.innerHTML = `<div class="hold-panel"><div class="hhead"><b>녹음 정리</b><span class="nsub">실수 녹음·시험 녹음을 휴지통으로 보냅니다. 완전히 지우지 않습니다.</span><button class="ibtn" data-close="1" title="닫기">✕</button></div><div class="hlist" id="slist"><div class="hint">불러오는 중…</div></div></div>`;
+    scrim.innerHTML = `<div class="hold-panel"><div class="hhead"><b>녹음 정리</b><span class="nsub">실수 녹음·시험 녹음을 휴지통으로 보냅니다. 완전히 지우지 않습니다.</span><button class="ibtn" data-close="1" title="닫기">${ic("x")}</button></div><div class="hlist" id="slist"><div class="hint">불러오는 중…</div></div></div>`;
     document.body.appendChild(scrim); keepFocus(scrim);
     const close = () => { scrim.remove(); document.removeEventListener("keydown", key); loadSidebar(); };
     const key = (e) => { if (e.key === "Escape" && isTop(scrim)) close(); };
@@ -1534,14 +1536,14 @@
     if (document.querySelector(".hold-panel")) return;
     const scrim = document.createElement("div");
     scrim.className = "scrim top";
-    scrim.innerHTML = `<div class="hold-panel"><div class="hhead"><b>${esc(course)} 자료</b><span class="nsub">누르면 열립니다. 폴더가 곧 분류입니다.</span><button class="ibtn" data-close="1" title="닫기">✕</button></div><div class="hlist" id="flist"><div class="hint">불러오는 중…</div></div></div>`;
+    scrim.innerHTML = `<div class="hold-panel"><div class="hhead"><b>${esc(course)} 자료</b><span class="nsub">누르면 열립니다. 폴더가 곧 분류입니다.</span><button class="ibtn" data-close="1" title="닫기">${ic("x")}</button></div><div class="hlist" id="flist"><div class="hint">불러오는 중…</div></div></div>`;
     document.body.appendChild(scrim); keepFocus(scrim);
     const close = () => { scrim.remove(); document.removeEventListener("keydown", key); closeMenu(); };
     const key = (e) => { if (e.key === "Escape" && isTop(scrim)) close(); };
     document.addEventListener("keydown", key);
     const size = (b) => b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
     const row = (it, loose) => `<div class="frow" data-path="${esc(it.path)}"><svg><use href="#${it.folder ? "i-folder" : "i-file"}"/></svg><span class="fname">${esc(it.name)}</span><span class="nsub num">${it.folder ? `${it.count}개` : size(it.bytes)}</span>` +
-      (loose ? `<span class="link" data-sort="${esc(it.path)}" data-suggest="${esc(it.suggest || "")}">${it.suggest ? `${esc(it.suggest)}?` : "분류"} ▾</span>` : "") + `</div>`;
+      (loose ? `<span class="link" data-sort="${esc(it.path)}" data-suggest="${esc(it.suggest || "")}">${it.suggest ? `${esc(it.suggest)}?` : "분류"} ${ic("down")}</span>` : "") + `</div>`;
     let data = null;
     const load = async () => {
       const r = await api.course_files(course), box = scrim.querySelector("#flist");
@@ -1595,7 +1597,7 @@
       const head = `<div class="ihead"><b title="${esc(x.path)}">${esc(x.name)}</b><span class="nsub num">${x.duration_ms ? clock(x.duration_ms) + " · " : ""}${x.bytes ? mb(x.bytes) : ""}${x.convert ? " · MP3로 바꿔서 보관" : ""}</span>` +
         (x.done || x.working ? "" : `<span class="link" data-idrop="${i}">빼기</span>`) + `</div>`;
       if (!x.ok) return `<div class="irow bad">${head}<div class="nsub warn">${esc(x.error || "가져올 수 없는 파일입니다")}</div></div>`;
-      if (x.done) return `<div class="irow done">${head}<div class="nsub">✓ ${esc(x.done)} <span class="link" data-iopen="${esc(x.lecture_id)}">회차 열기</span></div></div>`;
+      if (x.done) return `<div class="irow done">${head}<div class="nsub">${ic("tick")} ${esc(x.done)} <span class="link" data-iopen="${esc(x.lecture_id)}">회차 열기</span></div></div>`;
       const g = x.guess || {};
       return `<div class="irow">${head}<div class="hform">` +
         `<select data-i="${i}" data-f="course">${importCourseOptions(x.course)}</select>` +
@@ -1664,7 +1666,7 @@
     if (!imp.open) {
       const scrim = document.createElement("div");
       scrim.className = "scrim top import-scrim";
-      scrim.innerHTML = `<div class="hold-panel"><div class="hhead"><b>녹음 가져오기</b><span class="nsub">휴대폰 등 앱 밖에서 녹음한 파일 · 원본은 그대로 두고 앱 안에 복사합니다</span><button class="ibtn" data-close="1" title="닫기">✕</button></div>` +
+      scrim.innerHTML = `<div class="hold-panel"><div class="hhead"><b>녹음 가져오기</b><span class="nsub">휴대폰 등 앱 밖에서 녹음한 파일 · 원본은 그대로 두고 앱 안에 복사합니다</span><button class="ibtn" data-close="1" title="닫기">${ic("x")}</button></div>` +
         `<div class="hlist"><div class="idrop"><svg><use href="#i-import"/></svg><div><b>녹음 파일을 이 창에 끌어다 놓으세요</b><div class="nsub">탐색기나 카카오톡 대화창에서 바로 끌어올 수 있습니다 (m4a · mp3 · wav 등)</div></div><button class="ghost" id="impPick">파일 고르기…</button></div>` +
         `<div id="impList"></div><div class="iacts"><button class="ghost primary" id="impGo" hidden>가져오기</button></div><div id="impRecent"></div></div></div>`;
       document.body.appendChild(scrim); keepFocus(scrim);
@@ -1816,7 +1818,7 @@
     if (document.querySelector(".hold-panel")) return;
     const scrim = document.createElement("div");
     scrim.className = "scrim top";
-    scrim.innerHTML = `<div class="hold-panel"><div class="hhead"><b>확인</b><span class="nsub">앱이 혼자 정하지 못한 파일입니다. 답하면 그 파일만 회차에 연결하고, 파일은 옮기거나 지우지 않습니다.</span><button class="ibtn" data-close="1" title="닫기" aria-label="닫기">✕</button></div><div class="hlist" id="hlist"><div class="hint">불러오는 중…</div></div></div>`;
+    scrim.innerHTML = `<div class="hold-panel"><div class="hhead"><b>확인</b><span class="nsub">앱이 혼자 정하지 못한 파일입니다. 답하면 그 파일만 회차에 연결하고, 파일은 옮기거나 지우지 않습니다.</span><button class="ibtn" data-close="1" title="닫기" aria-label="닫기">${ic("x")}</button></div><div class="hlist" id="hlist"><div class="hint">불러오는 중…</div></div></div>`;
     document.body.appendChild(scrim); keepFocus(scrim);
     const close = () => { scrim.remove(); document.removeEventListener("keydown", key); loadSidebar(); };
     const key = (e) => {
@@ -1894,7 +1896,7 @@
       const r = await api.hold_answer(ids(i), value);
       if (!r.ok) { say(`<span class="err">${esc(r.error)}</span>`); scrim.querySelectorAll(".hq-ans button").forEach((b) => { b.disabled = false; }); return; }
       const lines = r.outcome.map((o) => o.state === "confirmed"
-        ? `<div class="ok-line">✓ ${esc(o.course || "")} ${o.date ? mdText(o.date) : ""}에 연결했습니다 — ${esc(o.next || "연결됨")}${o.lecture_id ? ` <span class="link" data-go="${o.lecture_id}">회차 열기</span>` : ""}</div>`
+        ? `<div class="ok-line">${ic("tick")} ${esc(o.course || "")} ${o.date ? mdText(o.date) : ""}에 연결했습니다 — ${esc(o.next || "연결됨")}${o.lecture_id ? ` <span class="link" data-go="${o.lecture_id}">회차 열기</span>` : ""}</div>`
         : `<div>아직 정하지 못했습니다: ${esc(o.reason || "")} <span class="link" data-undo="${o.id}">답 되돌리기</span></div>`);
       S.done[S.cards[i].id] = lines.join("");
       draw(); loadSidebar();
@@ -2070,7 +2072,7 @@
     if (document.querySelector(".notes-panel")) return;
     const scrim = document.createElement("div");
     scrim.className = "scrim";
-    scrim.innerHTML = `<div class="exam-panel notes-panel"><div class="hhead"><b>정리본 모음</b><span class="nsub">회차마다 만든 정리본입니다. 누르면 앱에서 열고, [브라우저]는 평소 쓰는 브라우저로 엽니다.</span><button class="ibtn" data-close="1" title="닫기" aria-label="닫기">✕</button></div><div class="exam-body"><div class="exam-courses" id="ncCourses"></div><div class="exam-main" id="ncMain"><div class="hint">불러오는 중…</div></div></div></div>`;
+    scrim.innerHTML = `<div class="exam-panel notes-panel"><div class="hhead"><b>정리본 모음</b><span class="nsub">회차마다 만든 정리본입니다. 누르면 앱에서 열고, [브라우저]는 평소 쓰는 브라우저로 엽니다.</span><button class="ibtn" data-close="1" title="닫기" aria-label="닫기">${ic("x")}</button></div><div class="exam-body"><div class="exam-courses" id="ncCourses"></div><div class="exam-main" id="ncMain"><div class="hint">불러오는 중…</div></div></div></div>`;
     document.body.appendChild(scrim); keepFocus(scrim);
     const S = { data: null, course: folder || null };
     const close = () => { scrim.remove(); document.removeEventListener("keydown", key); window.__lecturehubNotesChanged = null; };
@@ -2130,7 +2132,7 @@
     if (document.querySelector(".exam-panel")) return;
     const scrim = document.createElement("div");
     scrim.className = "scrim";
-    scrim.innerHTML = `<div class="exam-panel"><div class="hhead"><b>시험 대비</b><span class="nsub">달력에서 확정한 일정만 날짜로 셉니다. 수업 중 들린 날짜는 확인 전까지 후보입니다.</span><button class="ibtn" data-close="1" title="닫기">✕</button></div><div class="exam-body"><div class="exam-courses" id="exCourses"></div><div class="exam-main" id="exMain"></div></div></div>`;
+    scrim.innerHTML = `<div class="exam-panel"><div class="hhead"><b>시험 대비</b><span class="nsub">달력에서 확정한 일정만 날짜로 셉니다. 수업 중 들린 날짜는 확인 전까지 후보입니다.</span><button class="ibtn" data-close="1" title="닫기">${ic("x")}</button></div><div class="exam-body"><div class="exam-courses" id="exCourses"></div><div class="exam-main" id="exMain"></div></div></div>`;
     document.body.appendChild(scrim); keepFocus(scrim);
     const S = { data: null, course: folder || null, adding: false };
     const close = () => { scrim.remove(); document.removeEventListener("keydown", key); loadExamChip(); };
@@ -2148,7 +2150,7 @@
       const pages = c.pages || [];
       const rows = pages.map((g) => `<div class="exrow page${g.missing ? " missing" : ""}"><button class="ghost primary" data-page-open="${esc(g.id)}"${g.missing ? " disabled" : ""}>${esc(g.title)}</button>` +
         `<small class="ptarget" title="${esc(g.target)}">${g.kind === "artifact" ? "claude.ai 아티팩트" : esc(g.missing ? "파일 없음 · " + g.path : g.path)}</small>` +
-        `<button class="ibtn" data-page-del="${esc(g.id)}" title="링크 빼기 (페이지는 지우지 않음)">✕</button></div>`).join("");
+        `<button class="ibtn" data-page-del="${esc(g.id)}" title="링크 빼기 (페이지는 지우지 않음)" aria-label="링크 빼기">${ic("x")}</button></div>`).join("");
       const form = S.adding
         ? `<div class="exacts page-add"><input class="ask" data-page-target="1" placeholder="https://claude.ai/artifact/… 또는 학기 폴더 안 .html" spellcheck="false" autocomplete="off">` +
           `<button class="ghost" data-page-pick="1">파일 고르기</button></div>` +
@@ -2257,7 +2259,7 @@
     document.querySelectorAll(".cal-scrim").forEach((s) => s.remove());
     const scrim = document.createElement("div");
     scrim.className = "scrim cal-scrim";
-    scrim.innerHTML = `<div class="cal-panel compact"><div class="cal-head"><b id="calTitle">일정</b><span class="grow"></span><button class="ghost" data-c="add">+ 일정 추가</button><button class="ibtn" data-c="close" title="닫기">✕</button></div><div class="cal-body"><div class="cal-grid" id="calGrid"></div><div class="cal-side" id="calSide"></div></div></div>`;
+    scrim.innerHTML = `<div class="cal-panel compact"><div class="cal-head"><b id="calTitle">일정</b><span class="grow"></span><button class="ghost" data-c="add">+ 일정 추가</button><button class="ibtn" data-c="close" title="닫기">${ic("x")}</button></div><div class="cal-body"><div class="cal-grid" id="calGrid"></div><div class="cal-side" id="calSide"></div></div></div>`;
     document.body.appendChild(scrim); keepFocus(scrim);
     const close = () => { scrim.remove(); document.removeEventListener("keydown", key); loadNotices(); if (ui.view === "home") renderHome(); else loadExamChip(); };
     const key = (e) => { if (e.key === "Escape" && isTop(scrim)) close(); };
@@ -2307,7 +2309,7 @@
       const checked = pc.ok_at ? `${ago(pc.ok_at)} 확인` : "아직 확인 안 함";
       const postHead = `<div class="sl">eTL 게시판 <small>${checked}${pc.error && (!pc.ok_at || pc.error_at > pc.ok_at) ? ` · <span class="warn">${esc(pc.error)}</span>` : ""}</small> <span class="link" data-c="board-check">게시판 확인</span>${(b.posts || []).length > 5 && !state.allPosts ? ` <span class="link" data-c="posts-all">전체 ${b.posts.length}건</span>` : ""}</div>`;
       return `<div class="sl">eTL 공지${b.announcements.length > 5 && !state.allAnn ? ` <span class="link" data-c="ann-all">전체 ${b.announcements.length}건</span>` : ""}</div>${notes || `<div class="hint">가져온 공지가 없습니다.</div>`}` +
-        postHead + (postRows || `<div class="hint">${pc.ok_at ? "게시판에 글이 없습니다." : "과제 탭·공지에 없고 게시판에만 올라오는 글이 있습니다. [게시판 확인]을 누르면 읽어 옵니다(앱이 열려 있으면 하루 한 번 저절로 읽고, 새 글은 위에 알려 줍니다)."}</div>`) +
+        (!ed("etl_board") ? "" : postHead) + (!ed("etl_board") ? "" : postRows || `<div class="hint">${pc.ok_at ? "게시판에 글이 없습니다." : "과제 탭·공지에 없고 게시판에만 올라오는 글이 있습니다. [게시판 확인]을 누르면 읽어 옵니다(앱이 열려 있으면 하루 한 번 저절로 읽고, 새 글은 위에 알려 줍니다)."}</div>`) +
         `<div class="sl">eTL 자료 — 과목 폴더에 없는 것 ${b.files.length}개 <small>(있는 것 ${b.have} / 전체 ${b.total})</small>${b.files.some((f) => f.state !== "changed" && !f.big) ? ` <span class="link" data-etlf="all" data-id="0">빠진 파일 모두 받기 (${b.files.filter((f) => f.state !== "changed" && !f.big).length}개)</span>` : ""}</div>${files || `<div class="hint">${b.total ? "eTL에 올라온 파일이 모두 과목 폴더에 있습니다." : "아직 파일 목록을 가져오지 않았습니다. [지금 가져오기]를 누르세요."}</div>`}` +
         (b.closed.length ? `<div class="nsub">파일 목록을 열어 두지 않은 과목: ${esc(b.closed.join(", "))}</div>` : "");
     };
@@ -2435,7 +2437,7 @@
 
   /* 그스룸 함께 쓰는 사람: 이름 | 학번 연도 - 나머지 칸 (user 2026-11-14). rows: [[이름, 연도, 나머지], ...] */
   const nameWidth = (s) => `${Math.max(3, [...String(s || "")].length) + 1.6}em`;  // a 3-letter name fits; longer names widen the box
-  const mateRow = (m, i) => `<div class="mate" data-i="${i}"><input class="ask m-name" data-f="0" style="width:${nameWidth(m[0])}" value="${esc(m[0])}" placeholder="이름" maxlength="20" autocomplete="off" aria-label="이름"><input class="ask m-y" data-f="1" value="${esc(m[1])}" placeholder="2022" inputmode="numeric" autocomplete="off" aria-label="학번 앞 4자리(입학 연도)"><span class="m-dash">-</span><input class="ask m-n" data-f="2" value="${esc(m[2])}" placeholder="12345" maxlength="8" inputmode="numeric" autocomplete="off" aria-label="학번 뒤 자리"><button class="ibtn m-del" data-mdel="${i}" title="이 줄 지우기" aria-label="이 줄 지우기">✕</button></div>`;
+  const mateRow = (m, i) => `<div class="mate" data-i="${i}"><input class="ask m-name" data-f="0" style="width:${nameWidth(m[0])}" value="${esc(m[0])}" placeholder="이름" maxlength="20" autocomplete="off" aria-label="이름"><input class="ask m-y" data-f="1" value="${esc(m[1])}" placeholder="2022" inputmode="numeric" autocomplete="off" aria-label="학번 앞 4자리(입학 연도)"><span class="m-dash">-</span><input class="ask m-n" data-f="2" value="${esc(m[2])}" placeholder="12345" maxlength="8" inputmode="numeric" autocomplete="off" aria-label="학번 뒤 자리"><button class="ibtn m-del" data-mdel="${i}" title="이 줄 지우기" aria-label="이 줄 지우기">${ic("x")}</button></div>`;
   const matesHtml = (rows) => `<div class="mates">${rows.map(mateRow).join("")}</div><button class="ghost m-add" data-madd="1">+ 사람 추가</button>`;
   const matesText = (rows) => rows.filter((m) => m[0].trim() || m[1] || m[2]).map((m) => `${m[0].trim().replace(/\s+/g, " ") || "?"} ${m[1]}${m[2]}`).join("\n");
   const matesFrom = (pairs) => { const out = (pairs || []).map(([n, no]) => [String(n), String(no).slice(0, 4), String(no).slice(4)]); while (out.length < 3) out.push(["", "", ""]); return out; };
@@ -2465,8 +2467,8 @@
     const scrim = document.createElement("div");
     scrim.className = "scrim cal-scrim room-scrim";
     scrim.innerHTML = rulesOnly
-      ? `<div class="cal-panel room-panel room-rules"><div class="cal-head"><b>그스룸 정기 예약</b><small class="room-sub">매주 같은 요일·시각에 자동 예약 (30분~12시간)</small><span class="grow"></span><button class="ghost" data-c="full">그스룸 창</button><button class="ibtn" data-c="close" title="닫기">✕</button></div><div class="room-job" id="roomJob" hidden></div><div class="room-main room-rules-body" id="roomMain"></div></div>`
-      : `<div class="cal-panel room-panel"><div class="cal-head"><b>그스룸 예약</b><small class="room-sub">관정관 4층 6인실 · ${publicRooms ? "최대 3시간 · 예약마다 확인" : "30분~12시간(3시간을 넘으면 이어서)"} · 신청인+동반 3명</small><span class="grow"></span>${publicRooms ? "" : `<button class="ghost" data-c="rules">정기 예약</button>`}<button class="ghost" data-c="refresh">예약 목록 확인</button><button class="ibtn" data-c="close" title="닫기">✕</button></div><div class="room-job" id="roomJob" hidden></div><div class="room-chat"><div class="room-chat-log" id="roomChatLog" hidden></div><div class="room-chat-in"><input id="rChat" autocomplete="off" maxlength="300" placeholder="${publicRooms ? "예: 내일 2시부터 2시간 예약" : "말로 지시하세요 — 내일 2시부터 6시간 예약 · 수요일 거 취소"}"><button class="primary" data-c="chat" id="rChatGo">보내기</button></div></div><div class="cal-body"><div class="room-main" id="roomMain"></div><div class="cal-side" id="roomSide"></div></div></div>`;
+      ? `<div class="cal-panel room-panel room-rules"><div class="cal-head"><b>그스룸 정기 예약</b><small class="room-sub">매주 같은 요일·시각에 자동 예약 (30분~12시간)</small><span class="grow"></span><button class="ghost" data-c="full">그스룸 창</button><button class="ibtn" data-c="close" title="닫기">${ic("x")}</button></div><div class="room-job" id="roomJob" hidden></div><div class="room-main room-rules-body" id="roomMain"></div></div>`
+      : `<div class="cal-panel room-panel"><div class="cal-head"><b>그스룸 예약</b><small class="room-sub">관정관 4층 6인실 · ${publicRooms ? "최대 3시간 · 예약마다 확인" : "30분~12시간(3시간을 넘으면 이어서)"} · 신청인+동반 3명</small><span class="grow"></span>${publicRooms ? "" : `<button class="ghost" data-c="rules">정기 예약</button>`}<button class="ghost" data-c="refresh">예약 목록 확인</button><button class="ibtn" data-c="close" title="닫기">${ic("x")}</button></div><div class="room-job" id="roomJob" hidden></div><div class="room-chat"><div class="room-chat-log" id="roomChatLog" hidden></div><div class="room-chat-in"><input id="rChat" autocomplete="off" maxlength="300" placeholder="${publicRooms ? "예: 내일 2시부터 2시간 예약" : "말로 지시하세요 — 내일 2시부터 6시간 예약 · 수요일 거 취소"}"><button class="primary" data-c="chat" id="rChatGo">보내기</button></div></div><div class="cal-body"><div class="room-main" id="roomMain"></div><div class="cal-side" id="roomSide"></div></div></div>`;
     document.body.appendChild(scrim); keepFocus(scrim);
     const main = scrim.querySelector("#roomMain"), side = scrim.querySelector("#roomSide"), banner = scrim.querySelector("#roomJob");
     let timer = null;
@@ -2571,11 +2573,11 @@
       scrim.querySelectorAll('[data-c="refresh"]').forEach((b) => { b.disabled = running; });
       const opt = (list, cur) => list.map((v) => `<option${v === cur ? " selected" : ""}>${esc(v)}</option>`).join("");
       const hopt = (cur) => (r.hours || [3]).map((h) => `<option value="${h}"${h === (+cur || 3) ? " selected" : ""}>${hText(h)}</option>`).join("");
-      const logRow = (e) => `<div class="room-log${e.ok || e.skipped || e.stopped ? "" : " bad"}"><span class="t">${esc(stamp(e.ts))}</span>${esc(KIND[e.kind] || e.kind)}${e.room ? " " + esc(e.room) : ""}${e.ok ? " ✓" : ""}${e.detail ? " — " + esc(e.detail) : ""}<small>${esc(BY[e.by] || e.by || "")}</small></div>`;
+      const logRow = (e) => `<div class="room-log${e.ok || e.skipped || e.stopped ? "" : " bad"}"><span class="t">${esc(stamp(e.ts))}</span>${esc(KIND[e.kind] || e.kind)}${e.room ? " " + esc(e.room) : ""}${e.ok ? " " + ic("tick") : ""}${e.detail ? " — " + esc(e.detail) : ""}<small>${esc(BY[e.by] || e.by || "")}</small></div>`;
       const ruleRows = (wide) => st.rules.map((x, i) => `<div class="room-rule"><input type="checkbox" title="켜기/끄기" data-ri="${i}" data-rk="enabled"${x.enabled ? " checked" : ""}>` +
         `<select data-ri="${i}" data-rk="weekday">${opt(r.weekdays, x.weekday)}</select><select data-ri="${i}" data-rk="start">${opt(r.starts, x.start)}</select>` +
         `<select data-ri="${i}" data-rk="hours" title="길이">${hopt(x.hours)}</select>` + (wide ? `<span class="room-end">~ ${plus3h(x.start, x.hours || 3)}</span>` : "") +
-        `<select data-ri="${i}" data-rk="use">${opt(r.uses, x.use)}</select><button class="ibtn" data-rdel="${i}" title="규칙 지우기">✕</button></div>`).join("") || `<div class="hint">규칙이 없습니다. [+ 규칙]으로 추가하세요.</div>`;
+        `<select data-ri="${i}" data-rk="use">${opt(r.uses, x.use)}</select><button class="ibtn" data-rdel="${i}" title="규칙 지우기" aria-label="규칙 지우기">${ic("x")}</button></div>`).join("") || `<div class="hint">규칙이 없습니다. [+ 규칙]으로 추가하세요.</div>`;
       const ruleActs = `<div class="acts"><button class="ghost" data-c="radd">+ 규칙</button><span class="grow"></span>${st.dirty ? `<span class="hint">저장하지 않은 변경</span>` : ""}<button class="primary" data-c="rsave"${st.dirty ? "" : " disabled"}>저장</button></div>`;
       if (rulesOnly) {
         const plan = (st.dirty ? r.rules : st.rules).map((x) => {
@@ -2949,7 +2951,6 @@
       if (t.dataset.cands) return openCalendar();
       if (t.dataset.ev) { const [y, m] = t.dataset.date.split("-").map(Number); openCalendar(y, m, { id: t.dataset.ev }); }
     });
-    $("miniBtn").onclick = async () => { await syncSelection(); api.show_mini(); };
     $("recBtn").onclick = onRec;
     $("engines").onclick = openEnginePop;
     $("lvEngines").addEventListener("click", (e) => { const b = e.target.closest("button[data-eng]"); if (b && !b.disabled) startEngine(b); });
@@ -3032,7 +3033,7 @@
       menu($("overMore"), [{ items: [{ value: "snooze", text: "계속 녹음 — 10분 뒤 다시 묻기" }, { value: "mute", text: "계속 녹음 — 이번 수업은 묻지 않기" }] }],
         (v) => api.class_over_answer(v));
     };
-    $("starBtn").onclick = async () => { const r = await api.bookmark(); if (r.ok) toast("★ 중요 표시 · " + fmt(r.at_ms)); };
+    $("starBtn").onclick = async () => { const r = await api.bookmark(); if (r.ok) toast("중요 표시 · " + fmt(r.at_ms)); };
     $("courseBtn").onclick = (e) => {
       e.stopPropagation();
       const today = new Set(ui.info.today.map((s) => s.folder));
@@ -3285,7 +3286,7 @@
   function aboutSection(a, report, u) {
     if (!a || !a.ok) return "";
     const update = !u || !u.possible ? "" : `<label class="dlg-check"><input type="checkbox" data-update-check${u.on ? " checked" : ""}> 새 버전이 나오면 알려 주기 <small>(하루 한 번 버전 번호만 확인합니다. 보내는 정보는 없고, 설치는 직접 합니다.)</small></label>
-      ${u.available ? `<div class="ca gap"><b>새 버전 ${esc(u.latest)}이 있습니다.</b> <button data-a="update-open">내려받기 페이지 열기 ↗</button></div>` : ""}`;
+      ${u.available ? `<div class="ca gap"><b>새 버전 ${esc(u.latest)}이 있습니다.</b> <button data-a="update-open">내려받기 페이지 열기 ${ic("ext")}</button></div>` : ""}`;
     const size = (n) => n == null ? "" : ` · ${n < 1024 ? n + " B" : Math.round(n / 1024) + " KB"}`;
     const plan = report.plan ? `<div class="report-plan"><b>들어가는 것</b><ul>${report.plan.files.map((f) => `<li><code>${esc(f.name)}</code>${size(f.bytes)}<br><small>${esc(f.about)}</small></li>`).join("")}</ul>
       <b>들어가지 않는 것</b><ul>${report.plan.excluded.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "";
@@ -3346,9 +3347,9 @@
         ${k.site ? `<div class="cn">학교: ${k.site.default ? "서울대 eTL (myetl.snu.ac.kr)" : esc(k.site.base)} <button class="ghost" data-a="etlsite" ${busy ? "disabled" : ""}>다른 학교 Canvas</button></div>` : ""}
         <div class="ca"><button data-a="connect" ${busy ? "disabled" : ""}>${k.connected ? "키 바꾸기" : "연결"}</button>
           ${k.connected ? `<button data-a="test" ${busy ? "disabled" : ""}>테스트</button><button class="ghost" data-a="remove">연결 끊기</button>` : ""}
-          <button class="ghost" data-a="help">키 받는 곳 ↗</button><span class="cmsg${note[k.id] ? " " + note[k.id].tone : ""}" id="cm-${esc(k.id)}">${busy === k.id ? "서비스에 확인하는 중… (몇 초)" : note[k.id] ? esc(note[k.id].text) : ""}</span></div></div>`).join("");
-      const tools = s.tools.map((t) => `<tr><td>${esc(t.label)}</td><td>${t.found ? "✔ 있음" : t.required ? "✖ 필요" : "– 없음(선택)"}${t.signed_in === true ? " · 로그인됨" : t.signed_in === false ? " · 로그인 필요" : ""}</td>
-        <td>${esc(t.needed_for)}${t.found ? "" : `<br><small>${esc(t.hint)}</small>`}</td><td>${t.help_url && !t.found ? `<button class="ghost" data-a="thelp" data-id="${esc(t.id)}">설치 안내 ↗</button>` : ""}</td></tr>`).join("");
+          <button class="ghost" data-a="help">키 받는 곳 ${ic("ext")}</button><span class="cmsg${note[k.id] ? " " + note[k.id].tone : ""}" id="cm-${esc(k.id)}">${busy === k.id ? "서비스에 확인하는 중… (몇 초)" : note[k.id] ? esc(note[k.id].text) : ""}</span></div></div>`).join("");
+      const tools = s.tools.map((t) => `<tr><td>${esc(t.label)}</td><td>${t.found ? ic("tick") + " 있음" : t.required ? ic("alert") + " 필요" : "– 없음(선택)"}${t.signed_in === true ? " · 로그인됨" : t.signed_in === false ? " · 로그인 필요" : ""}</td>
+        <td>${esc(t.needed_for)}${t.found ? "" : `<br><small>${esc(t.hint)}</small>`}</td><td>${t.help_url && !t.found ? `<button class="ghost" data-a="thelp" data-id="${esc(t.id)}">설치 안내 ${ic("ext")}</button>` : ""}</td></tr>`).join("");
       scrim.innerHTML = `<div class="dialog wide" role="dialog"><h4>설정 · 연결</h4>
         <h5>화면</h5><div class="appearance-row"><label>테마 <select data-appearance="theme">${[["system", "시스템"], ["light", "밝게"], ["dark", "어둡게"]].map(([k,v]) => `<option value="${k}"${s.appearance?.theme === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
         <label>본문 글자 크기 <select data-appearance="text_size">${[["normal", "보통"], ["large", "크게"], ["larger", "더 크게"]].map(([k,v]) => `<option value="${k}"${s.appearance?.text_size === k ? " selected" : ""}>${v}</option>`).join("")}</select></label></div>
@@ -3587,7 +3588,7 @@
           <div class="row"><input id="su-parent" class="ask" value="${esc(st.parent)}" readonly><button data-act="pick">폴더 고르기</button></div>
           <div class="row"><label>학기 이름 <input id="su-term" class="ask short" value="${esc(st.term)}" maxlength="24"></label></div>
           <p class="hint">학기 폴더는 <b>${esc(st.parent)}\\${esc(st.term)}</b> 로 만들어집니다.</p>
-          ${(st.parentNotes || []).map((n) => `<p class="hint warn">⚠ ${esc(n)}</p>`).join("")}
+          ${(st.parentNotes || []).map((n) => `<p class="hint warn">${ic("alert")} ${esc(n)}</p>`).join("")}
           ${st.trialOffer ? `<div class="trial-offer"><p><b>먼저 둘러보고 싶다면</b> — 합성 강의 1개(짧은 녹음·전사·슬라이드)와 그 정리본이 든 <b>체험 학기</b>를 앱 폴더에 만들어 엽니다. 실제 수업 자료는 쓰지 않고, 나중에 설정에서 내 학기 폴더를 정하면 빠져나옵니다.</p>
             <button data-act="trial"${st.busy ? " disabled" : ""}>${st.busy ? "체험 학기 만드는 중…" : "체험 학기로 둘러보기"}</button></div>` : ""}`;
         if (st.step === 2) return `<p>수강 과목과 시간을 적으면 수업 시간에 맞춰 과목이 골라지고 녹음할지 물어봐요. 나중에 설정의 '시간표·학기 편집'에서 고칠 수 있고, 지금은 비워 둬도 됩니다.</p>
@@ -3604,11 +3605,11 @@
           const note = st.style === "existing" ? `<p class="hint">이미 쓰는 폴더: 앞에서 고른 <b>${esc(st.parent)}</b> 폴더를 학기 폴더로 그대로 씁니다(그 안에 _lecturehub만 더합니다).</p>` : "";
           return layoutSection(st.layout, "setup", st.style) + note;
         }
-        const row = (t) => `<tr><td>${esc(t.label)}</td><td>${t.found ? "✔ 있음" : t.required ? "✖ 필요" : "– 없음"}</td><td>${esc(t.needed_for)}${t.found ? "" : `<br><small>${esc(t.hint)}</small>`}</td></tr>`;
+        const row = (t) => `<tr><td>${esc(t.label)}</td><td>${t.found ? ic("tick") + " 있음" : t.required ? ic("alert") + " 필요" : "– 없음"}</td><td>${esc(t.needed_for)}${t.found ? "" : `<br><small>${esc(t.hint)}</small>`}</td></tr>`;
         const all = Object.values(st.tools), need = all.filter((t) => t.required), lack = need.filter((t) => !t.found);
         const head = lack.length
           ? `<p class="err">녹음 파일을 마무리하는 데 필요한 프로그램(${lack.map((t) => esc(t.label)).join(", ")})이 없습니다. 아래 안내대로 설치한 뒤 앱을 다시 켜세요. 설정은 지금 저장해 둘 수 있습니다.</p>`
-          : `<p class="ok-line">✔ 녹음에 필요한 프로그램이 모두 있습니다. 바로 시작할 수 있어요.</p>`;
+          : `<p class="ok-line">${ic("tick")} 녹음에 필요한 프로그램이 모두 있습니다. 바로 시작할 수 있어요.</p>`;
         return `${head}<table class="tools">${need.map(row).join("")}</table>
           <details class="opt-tools"><summary>선택 프로그램 보기 — 없어도 녹음과 전사는 됩니다</summary><table class="tools">${all.filter((t) => !t.required).map(row).join("")}</table></details>`;
       }

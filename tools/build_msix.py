@@ -80,13 +80,11 @@ def find_makeappx() -> Path | None:
     return candidates[0] if candidates else None
 
 
-def public_icon(*folders: Path) -> Path:
-    """The public edition's app icon: ``app_public.png`` in this repository, ``app.png`` in the public export
-    (tools/export_public.py renames it), whichever is found first."""
+def app_icon(*folders: Path) -> Path:
+    """The app icon (the same in every edition): ``app.png`` in the first folder that has it."""
     for folder in folders:
-        for name in ("app_public.png", "app.png"):
-            if (folder / name).is_file():
-                return folder / name
+        if (folder / "app.png").is_file():
+            return folder / "app.png"
     raise SystemExit("app icon not found")
 
 
@@ -129,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = manifest_text((REPO / MANIFEST).read_text(encoding="utf-8"), name=args.name, publisher=args.publisher,
                              publisher_display_name=args.publisher_display_name, version=version)
     (stage / "AppxManifest.xml").write_text(manifest, encoding="utf-8")
-    make_tiles(public_icon(app / "_internal" / "lecturehub" / "ui" / "assets", REPO / "src" / "lecturehub" / "ui" / "assets"),
+    make_tiles(app_icon(app / "_internal" / "lecturehub" / "ui" / "assets", REPO / "src" / "lecturehub" / "ui" / "assets"),
                stage / "Assets")
     target = out / f"LectureHub-{version}-x64.msix"
     target.unlink(missing_ok=True)

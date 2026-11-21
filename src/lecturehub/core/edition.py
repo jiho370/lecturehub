@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 MARKER = Path(__file__).with_name("edition.json")
-PUBLIC_OFF = ("assignment", "mai", "qa", "memorizer", "gsr_prefs", "captions")  # features the public edition does not have (gsr_prefs: saved companions + room order)
+PUBLIC_OFF = ("assignment", "mai", "qa", "memorizer", "gsr_prefs", "captions", "etl_board")  # features the public edition does not have (gsr_prefs: saved companions + room order; etl_board: the LearningX board is read through its unpublished API, owner only — user 2026-11-21)
 
 
 def _marked_public() -> bool:

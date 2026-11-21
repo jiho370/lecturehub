@@ -17,7 +17,7 @@ Development only (never shipped): PyMuPDF (AGPL-3.0) builds synthetic PDFs for t
 
 | pythonnet, clr-loader, bottle, proxy-tools (with pywebview) | MIT | the window's bridge to WebView2 |
 | Microsoft WebView2 loader (with pywebview) | BSD-3-Clause | starts the WebView2 Runtime already on the PC |
-| grpcio, protobuf, google-auth and friends (with google-cloud-speech) | Apache-2.0 / BSD-3-Clause | speech services |
+| grpcio, protobuf, google-auth and friends (with google-cloud-speech) | Apache-2.0 / BSD-3-Clause | speech services (from source only, see below) |
 | certifi | MPL-2.0 | the list of trusted web certificates, unchanged |
 
 The installed app (the setup file / zip) also carries:
@@ -29,6 +29,8 @@ The installed app (the setup file / zip) also carries:
 - **The exact list of every Python package inside that build**, with version and licence, and each package's own
   licence files: the `licenses` folder (`licenses\THIRD_PARTY_PACKAGES.txt`), written by the build itself from what
   really went in.
+- Not google-cloud-speech and the packages it needs (grpcio, google-auth, cryptography, protobuf and friends):
+  the installed app has no live captions, so it leaves them out. They are used only when running from source.
 - The Python runtime (PSF licence) and the PyInstaller bootloader (GPL-2.0 with an exception that allows
   distributing applications built with it under any licence).
 

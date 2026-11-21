@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 from datetime import UTC
 from pathlib import Path
 
@@ -23,6 +24,10 @@ ICON = Path(__file__).resolve().parent / "assets" / "app.ico"
 APP_ID = "LectureHub.App"
 APP_ID_PUBLIC = "LectureHub.Public"  # the public app gets its own taskbar button and pin (user 2026-11-14)
 MAIN_TITLE = "Lecture Hub"  # also how a second start finds the open window (core/single_instance.py)
+SW_MINIMIZE, SW_RESTORE = 6, 9  # ShowWindow commands for the main window
+MINI_TITLE = "수업 녹음 · 미니"  # the small window that shows a notice while the main window is minimized
+# closing the window while a recording runs: it goes to the taskbar instead (once per recording)
+CLOSE_WHILE_RECORDING = ("녹음 중입니다", "창을 닫지 않고 작업 표시줄로 내렸습니다. 녹음을 끝낸 뒤에 닫을 수 있습니다.")
 CONSENT_UNCONFIRMED = "동의 확인 창을 거치지 않아 동의를 저장하지 않았습니다. 다시 눌러 주세요."
 CONSENT_TOKEN_TTL_S = 300
 ASSIGNMENT_PROVIDER = "claude_assignment"  # = index.assignment_pack.PROVIDER (D-050: no index import here)
@@ -91,8 +96,10 @@ class Api:
         self._media = media
         self._room = room
         self._main = None
-        self._mini = None
+        self._mini = None  # created the first time a notice needs it (_mini_window), then kept hidden
+        self._mini_lock = threading.Lock()  # two notices at once must not make two small windows
         self._quitting = False
+        self._close_told = None  # the recording whose "the window stays open" notification was already shown
         self._side_restore = None  # 옆으로 보기: (was maximized, (x, y, w, h)) to go back to
         self._consent_tokens = {}  # one-time tokens from consent_confirm (security review 2026-11-05)
 
@@ -353,7 +360,7 @@ class Api:
             try:
                 if win:
                     win.destroy()
-            except Exception:  # noqa: BLE001 - closing anyway
+            except Exception:  # noqa: BLE001, S110 - closing anyway
                 pass
         return {"ok": True}
 
@@ -376,15 +383,15 @@ class Api:
     def set_selection(self, course, mode="mic", device_name=None, course_source="unknown", with_pc=False):
         return self._backend.set_selection(course, mode, device_name, course_source, bool(with_pc))
 
-    def start_selected(self):
+    def start_selected(self):  # the small window's record button
         selected = self._backend.selection
         course = selected.get("course") if selected.get("course_source") == "user_pick" else self._backend.suggest_course()
         permission = self._backend.recording_permission(course or "")
         if not permission.get("allowed"):
             return {"ok": False, "reason": permission.get("reason")}
-        if permission.get("warning"):
-            if not self._main or not self._main.create_confirmation_dialog("녹음 허락 확인", permission["warning"]):
-                return {"ok": False, "reason": "녹음 허락을 확인한 뒤 시작하세요."}
+        if permission.get("warning") and (
+                not self._main or not self._main.create_confirmation_dialog("녹음 허락 확인", permission["warning"])):
+            return {"ok": False, "reason": "녹음 허락을 확인한 뒤 시작하세요."}
         return self._backend.start_selected()
 
     def discard_recording(self):
@@ -1223,17 +1230,68 @@ class Api:
         return self._memorizer().open()
 
     # windows
-    def show_mini(self):
-        if self._mini is not None:
-            self._main.hide()
-            self._mini.show()
-        return {"ok": self._mini is not None}
-
     def show_main(self):
+        """The small window's [크게], and closing it: back to the main window, visible and not minimized."""
         if self._mini is not None:
             self._mini.hide()
         self._main.show()
+        try:
+            hwnd = self._main_hwnd()
+            if hwnd:
+                import ctypes
+
+                if ctypes.windll.user32.IsIconic(hwnd):  # it was minimized when the notice came: Show() keeps that
+                    self._show_main_window(SW_RESTORE)
+        except Exception:  # noqa: BLE001 - it is shown; only still on the taskbar
+            applog.swallowed("큰 창 다시 펴기")
         return {"ok": True}
+
+    def set_on_top(self, on):  # the small window's [항상 위]
+        if self._mini is not None:
+            self._mini.on_top = bool(on)
+        return {"ok": True, "on_top": bool(on)}
+
+    def _mini_window(self):
+        """The small window, created the first time a notice needs it (not at start-up: its WebView2 costs about
+        68 MB) and kept, hidden, until the app closes. ``None`` when it cannot be made now.
+
+        pywebview makes a window at once only when ``create_window`` is called after ``webview.start`` from a thread
+        other than the main one (the main thread sits in ``start``): it then asks the window thread to build it
+        (WinForms ``Invoke``) and waits. The attention hook runs on its own thread, so that is the case here."""
+        if self._mini is not None:
+            return self._mini
+        if self._quitting or self._main is None or threading.current_thread() is threading.main_thread():
+            return None
+        if not self._mini_lock.acquire(timeout=30):  # another notice is still making it
+            return None
+        try:
+            if self._mini is None and not self._quitting:
+                self._mini = _create_mini(self)
+            return self._mini
+        finally:
+            self._mini_lock.release()
+
+    def _show_mini(self):
+        """Show the small window in place of the main one (hidden meanwhile; [크게] or closing brings it back)."""
+        mini = self._mini_window()
+        if mini is None:
+            return False
+        self._main.hide()
+        mini.show()
+        return True
+
+    def _notice_out_of_sight(self):
+        """A notice while the main window is minimized or hidden: the small window with the notice card; when that
+        cannot be made or shown, the main window comes back instead. Never raises (the engines' threads)."""
+        try:
+            if self._show_mini():
+                return
+        except Exception:  # noqa: BLE001 - the main window is restored instead
+            applog.swallowed("알림 미니 창")
+        try:
+            self._show_main_window(SW_RESTORE)
+        except Exception:  # noqa: BLE001 - the notice is also on the page and in the Windows notification
+            applog.swallowed("알림 때 창 다시 보이기")
 
     def side_view(self, on):
         """옆으로 보기 (user 2026-11-14): the main window takes the right third of its screen at full height, so a
@@ -1245,27 +1303,72 @@ class Api:
         except Exception as exc:  # noqa: BLE001 - a window that cannot move must not break the app
             return {"ok": False, "error": f"창을 옮기지 못했습니다: {exc}"}
 
-    def set_on_top(self, on):
-        if self._mini is not None:
-            self._mini.on_top = bool(on)
-        return {"ok": True, "on_top": bool(on)}
-
     # window events
-    def _on_main_closing(self):
-        if self._backend.recording and self._mini is not None and not self._quitting:
-            # a recording nobody can see runs for hours (user 2026-09-30): keep it visible in the mini window
-            self.show_mini()
+    def _main_hwnd(self, title: str = MAIN_TITLE) -> int:
+        """The main window's handle (or the small one's), found by its title like ``_side_view``; 0 when none."""
+        if sys.platform != "win32":
+            return 0
+        import ctypes
+
+        return ctypes.windll.user32.FindWindowW(None, title) or 0
+
+    def _main_out_of_sight(self) -> bool:
+        """True when the main window is minimized or hidden."""
+        hwnd = self._main_hwnd()
+        if not hwnd:
             return False
-        if self._backend.recording:
-            keep_going = self._main.create_confirmation_dialog(
-                "녹음 중입니다",
-                "녹음 중입니다.\n\n창을 닫아도 녹음은 계속되고, 앱을 다시 열면 이어서 볼 수 있습니다.\n"
-                "녹음을 끝내려면 [취소]를 누르고 녹음 버튼으로 종료하세요.\n\n창을 닫을까요?")
-            if not keep_going:
-                return False
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        return bool(user32.IsIconic(hwnd) or not user32.IsWindowVisible(hwnd))
+
+    def _show_main_window(self, command: int) -> bool:
+        """``SW_MINIMIZE`` or ``SW_RESTORE`` for the main window. Posted (ShowWindowAsync), so it neither waits on the
+        window's own thread nor runs inside the closing event; SW_RESTORE brings a maximized window back maximized."""
+        hwnd = self._main_hwnd()
+        if hwnd:
+            import ctypes
+            from ctypes import wintypes
+
+            return bool(ctypes.windll.user32.ShowWindowAsync(wintypes.HWND(hwnd), command))
+        if self._main is None:
+            return False
+        (self._main.minimize if command == SW_MINIMIZE else self._main.restore)()  # pywebview, when no handle
+        return True
+
+    def _recording_key(self):
+        """Which recording is running (its session folder), for "once per recording"; ``None`` when not known."""
+        state = self._backend.state() if hasattr(self._backend, "state") else {}
+        for part in (state.get("status"), state.get("pc")):
+            if isinstance(part, dict) and part.get("session_dir"):
+                return part["session_dir"]
+        return None
+
+    def _on_main_closing(self):
+        if self._backend.recording and not self._quitting:
+            # a recording nobody can see runs for hours (user 2026-09-30): the window goes to the taskbar instead
+            self._keep_open_while_recording()
+            return False
         self._backend.stop_live_helpers()  # P-053: the Q&A helper and captions do not outlive the app
         self._quitting = True
         return True
+
+    def _keep_open_while_recording(self) -> None:
+        """Minimize the main window and say why, once per recording. Never raises: the close is refused anyway
+        (pywebview would let the window close if the closing handler raised), and the recorder is not touched."""
+        try:
+            self._show_main_window(SW_MINIMIZE)
+        except Exception:  # noqa: BLE001 - the window then simply stays open
+            applog.swallowed("녹음 중 창 내리기")
+        try:
+            key = self._recording_key()
+            if key is None or key != self._close_told:
+                self._close_told = key
+                from .notify import toast
+
+                toast(*CLOSE_WHILE_RECORDING, icon=str(ICON) if ICON.exists() else None)
+        except Exception:  # noqa: BLE001 - the recording goes on; only the explanation is missing
+            applog.swallowed("녹음 중 창 닫기 알림(Windows)")
 
     def _attention_text(self, kind):
         """Title and body of the Windows notification for the kinds that get one (the user is probably looking at
@@ -1279,8 +1382,9 @@ class Api:
 
     def _attention(self, kind):
         """A notice appeared (class over, next class, long pause, sound lost, disk nearly full): beep and flash the
-        taskbar button; when the big window is minimized, bring up the mini window, which stays on top and has the
-        same buttons. Lost sound and low disk also get a Windows notification."""
+        taskbar button; when the main window is minimized or hidden, bring up the small window, which stays on top
+        and has the notice card with its buttons (the main window if that fails). Lost sound and low disk also get a
+        Windows notification."""
         if sys.platform != "win32":
             return
         import ctypes
@@ -1300,23 +1404,20 @@ class Api:
             winsound.MessageBeep(0x30)
         except (ImportError, RuntimeError):
             pass
-        user32 = ctypes.windll.user32
-        main = user32.FindWindowW(None, "Lecture Hub")
-        if main and (user32.IsIconic(main) or not user32.IsWindowVisible(main)) and self._mini is not None:
-            try:
-                self.show_mini()
-            except Exception:  # noqa: BLE001, S110 - the notice is also on the page; never break the recorder
-                pass
+        try:
+            if self._main_out_of_sight():
+                self._notice_out_of_sight()
+        except Exception:  # noqa: BLE001 - the notice is also on the page; never break the recorder
+            applog.swallowed("알림 때 창 다시 보이기")
 
         class FLASHWINFO(ctypes.Structure):
             _fields_ = [("cbSize", wintypes.UINT), ("hwnd", wintypes.HWND), ("dwFlags", wintypes.DWORD),
                         ("uCount", wintypes.UINT), ("dwTimeout", wintypes.DWORD)]
 
-        for title in ("Lecture Hub", "수업 녹음 · 미니"):
-            hwnd = user32.FindWindowW(None, title)
+        for hwnd in (self._main_hwnd(), self._main_hwnd(MINI_TITLE) if self._mini else 0):
             if hwnd:
                 info = FLASHWINFO(ctypes.sizeof(FLASHWINFO), hwnd, 0x3 | 0xC, 0, 0)  # FLASHW_ALL | TIMERNOFG
-                user32.FlashWindowEx(ctypes.byref(info))
+                ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
 
     def _on_main_closed(self):
         if self._mini is not None:
@@ -1325,7 +1426,7 @@ class Api:
     def _on_mini_closing(self):
         if self._quitting:
             return True
-        self.show_main()  # closing the mini window returns to the main window
+        self.show_main()  # closing the small window returns to the main window
         return False
 
 
@@ -1398,6 +1499,36 @@ def guard_navigation(window, on_refused=None) -> None:
 
     window._lecturehub_navigation_guard = on_start  # the control only borrows the function: keep it alive
     window.events.before_show += attach
+    made = getattr(window.events.before_show, "is_set", None)
+    if callable(made) and made():  # made after webview.start (the small window): before_show has already passed
+        _on_window_thread(window, attach)
+
+
+def _on_window_thread(window, func) -> None:
+    """Run ``func`` on the window's own thread (WinForms ``Invoke``), or right here when that is not possible."""
+    try:
+        from System import Action  # pythonnet
+
+        window.native.Invoke(Action(func))
+        return
+    except Exception:  # noqa: BLE001, S110 - no WinForms form (tests) or no pythonnet: run it here
+        pass
+    func()
+
+
+def _create_mini(api):
+    """The small window that shows a notice while the main window is minimized (Api._mini_window). Same guards as
+    the main window: it carries the whole API, so it may not leave the app's page; closing it goes back."""
+    import webview
+
+    mini = webview.create_window(
+        MINI_TITLE, url=str(WEB / "mini.html"), js_api=api, width=340, height=150,
+        resizable=False, hidden=True, on_top=True, background_color="#f5f0e8")
+    if mini is None:
+        raise RuntimeError("pywebview did not make the small window")
+    guard_navigation(mini)
+    mini.events.closing += api._on_mini_closing
+    return mini
 
 
 MAIN_MIN = (760, 640)  # the normal window's smallest size (logical px); 옆으로 보기 lowers it while on
@@ -1509,16 +1640,11 @@ def main() -> int:
     main_window = webview.create_window(
         MAIN_TITLE, url=str(WEB / "index.html"), js_api=api, width=width, height=height,
         min_size=MAIN_MIN, maximized=not size, background_color="#f5f0e8", text_select=True)
-    mini = webview.create_window(
-        "수업 녹음 · 미니", url=str(WEB / "mini.html"), js_api=api, width=340, height=150,
-        resizable=False, hidden=True, on_top=True, background_color="#f5f0e8")
-    api._main, api._mini = main_window, mini
-    for each in (main_window, mini):  # both carry the whole API: neither may leave the app's own page
-        guard_navigation(each)
+    api._main = main_window
+    guard_navigation(main_window)  # it carries the whole API: it may not leave the app's own page
     main_window.events.loaded += api._bind_drop
     main_window.events.closing += api._on_main_closing
-    main_window.events.closed += api._on_main_closed
-    mini.events.closing += api._on_mini_closing
+    main_window.events.closed += api._on_main_closed  # the small window (made on the first notice) goes too
     webview.start(icon=str(ICON) if ICON.exists() else None, private_mode=True)
     return 0
 

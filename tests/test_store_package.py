@@ -78,7 +78,7 @@ def test_manifest_is_valid_xml_with_the_identity_alias_and_capabilities():
 def test_tiles_have_the_sizes_the_manifest_names(tmp_path):
     from PIL import Image
 
-    made = msix.make_tiles(msix.public_icon(ROOT / "src/lecturehub/ui/assets"), tmp_path / "Assets")  # app.png in the export
+    made = msix.make_tiles(msix.app_icon(ROOT / "src/lecturehub/ui/assets"), tmp_path / "Assets")
     sizes = {p.name: Image.open(p).size for p in made}
     assert sizes == msix.TILES
     manifest = (ROOT / msix.MANIFEST).read_text(encoding="utf-8")

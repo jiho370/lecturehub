@@ -11,6 +11,8 @@ Per recording: the latest job of each engine and whether it can be started now (
 """
 from __future__ import annotations
 
+import os
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,9 +27,49 @@ LEVEL = {"queued": "대기", "running": "처리 중", "retrying": "재시도 중
          "qa_warning": "완료(검토 필요)", "done": "완료", "failed": "실패", "cancelled": "취소됨"}
 
 
+# Parsed state.json per file, keyed by full path -> (st_mtime_ns, st_size, state). Finished jobs never change, so
+# an unchanged file is only stat-ed. The states are shared, not copied: every caller in this module only reads them.
+_STATE_CACHE: dict[str, tuple[int, int, dict]] = {}
+_STATE_LOCK = threading.Lock()
+
+
+def _cached_states(base: Path) -> list[dict]:
+    try:  # one listing of the job folders; glob("*/state.json") would list the inside of every job folder as well
+        with os.scandir(base) as entries:
+            paths = sorted(base / entry.name / "state.json" for entry in entries if entry.is_dir())
+    except OSError:
+        paths = []
+    prefix = str(base) + os.sep  # with the separator: "jobs" must not match "jobs_whisper" and wipe its entries
+    live: set[str] = set()
+    states: list[dict] = []
+    for p in paths:
+        key = str(p)
+        try:
+            st = p.stat()
+        except OSError:
+            continue  # a job folder without state.json (or one that just vanished): same as absent
+        live.add(key)
+        stamp = (st.st_mtime_ns, st.st_size)
+        with _STATE_LOCK:
+            hit = _STATE_CACHE.get(key)
+        if hit and hit[:2] == stamp:
+            states.append(hit[2])
+            continue
+        state = read_json(p)
+        with _STATE_LOCK:
+            if state:  # a failed read is not cached, so a repaired file is read again
+                _STATE_CACHE[key] = (*stamp, state)
+            else:
+                _STATE_CACHE.pop(key, None)
+        states.append(state or {})
+    with _STATE_LOCK:  # forget deleted jobs under this folder
+        for key in [k for k in _STATE_CACHE if k.startswith(prefix) and k not in live]:
+            del _STATE_CACHE[key]
+    return states
+
+
 def _jobs(root: Path, provider: str) -> list[dict]:
-    base = app_dir(root) / PROVIDERS[provider].job_folder
-    states = [read_json(p) or {} for p in sorted(base.glob("*/state.json"))] if base.is_dir() else []
+    states = _cached_states(app_dir(root) / PROVIDERS[provider].job_folder)
     return [s for s in states if s.get("provider", "gemini_transcribe") == provider]
 
 

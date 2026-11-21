@@ -783,7 +783,12 @@ class Library:
     @_safe
     def etl_board(self) -> dict:
         """eTL announcements and the course files that are not in the course folder yet (index/etl_files.py)."""
-        from lecturehub.index import etl_board, etl_files
+        from lecturehub.core import edition
+        from lecturehub.index import etl_files
+
+        if not edition.has("etl_board"):  # public edition: no course-board posts (user 2026-11-21)
+            return etl_files.board(self.root)
+        from lecturehub.index import etl_board
 
         return {**etl_files.board(self.root), "posts": etl_board.posts(self.root)[:30],
                 "post_check": etl_board.status(self.root)}
@@ -791,6 +796,10 @@ class Library:
     @_safe
     def etl_board_check(self) -> dict:
         """[게시판 확인]: read the course boards now (index/etl_board.py) and add dated posts as calendar candidates."""
+        from lecturehub.core import edition
+
+        if not edition.has("etl_board"):
+            raise ValueError("공개판에는 eTL 게시판 읽기가 없습니다")
         from lecturehub.index import etl_board, etl_sync
 
         token = etl_sync.load_token()
@@ -804,6 +813,10 @@ class Library:
     def etl_board_auto(self) -> list[dict]:
         """Once a day (app start and the 10-minute loop, never while recording — the caller checks): read the
         boards when due, add dated posts as candidates, and return the new posts to tell (user 2026-11-20)."""
+        from lecturehub.core import edition
+
+        if not edition.has("etl_board"):
+            return []
         from lecturehub.index import etl_board, etl_sync
 
         token = etl_sync.load_token()
@@ -820,12 +833,20 @@ class Library:
     @_safe
     def etl_board_new(self) -> dict:
         """New board posts not marked 확인함 (the banner on top)."""
+        from lecturehub.core import edition
+
+        if not edition.has("etl_board"):
+            return {"items": []}
         from lecturehub.index import etl_board
 
         return {"items": etl_board.unseen(self.root)}
 
     @_safe
     def etl_board_seen(self, ids: list[str]) -> dict:
+        from lecturehub.core import edition
+
+        if not edition.has("etl_board"):
+            return {"seen": 0}
         from lecturehub.index import etl_board
 
         return {"seen": etl_board.mark_seen(self.root, list(ids))}
