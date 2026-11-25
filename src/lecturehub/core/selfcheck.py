@@ -16,11 +16,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 REQUIRED_MODULES = ("webview", "keyring", "keyring.backends.Windows", "pyaudiowpatch", "httpx", "pypdfium2", "PIL",
-                    "numpy", "typer", "truststore")
+                    "numpy", "typer", "truststore", "pptx")  # pptx: material text for the AI app link (D-072)
 FORBIDDEN_MODULES = ("pymupdf", "fitz")  # AGPL: dev-only, must not be in an app that ships
 
 
@@ -62,7 +62,8 @@ def run(*, window: bool = False, keep: bool = False) -> dict:
         if _step(results, "첫 설정 → 수업 목록 만들기", lambda: _first_run(scratch, root_holder)):
             _step(results, "수업 목록 읽기", lambda: _sidebar(root_holder["root"]))
         trial: dict = {}
-        _step(results, "체험 학기 만들기(녹음·전사·정리본 흐름)", lambda: _trial(scratch, trial))
+        _step(results, "예시 학기 만들기(녹음·전사·정리본 흐름)", lambda: _trial(scratch, trial))
+        _step(results, "AI 앱 연결 응답", lambda: _ai_link(trial.get("root")))
         _step(results, "도우미 작업 폴더", _agent_workspace)
         _step(results, "문제 보고 파일", lambda: _report(scratch, root_holder.get("root")))
         if window:  # last: it points the temporary settings at the trial semester
@@ -100,10 +101,9 @@ def _all_modules() -> str:
     that needs a left-out library when it is imported, fails here instead of on a user's PC."""
     import importlib
     import pkgutil
+    from importlib.resources import files
 
     import lecturehub
-
-    from importlib.resources import files
 
     names = [m.name for m in pkgutil.walk_packages(lecturehub.__path__, "lecturehub.")]
     # lecturehub.ui has no __init__.py: walk_packages skips such a folder when the modules are loose files
@@ -146,7 +146,7 @@ def _ffmpeg() -> str:
         if not path:
             raise RuntimeError(f"{name}를 찾을 수 없습니다")
         done = subprocess.run([path, "-version"], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=30, creationflags=proc.NO_WINDOW)
+                              timeout=30, creationflags=proc.NO_WINDOW, check=False)
         if done.returncode:
             raise RuntimeError(f"{name} 실행 실패({done.returncode})")
         bundled = getattr(sys, "frozen", False) and Path(path).parent == Path(sys.executable).parent / "bin"
@@ -169,7 +169,8 @@ def _worker() -> str:
     from . import proc
 
     done = subprocess.run([proc.console_python(), "-m", "lecturehub", "version"], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=120, creationflags=proc.NO_WINDOW)
+                          encoding="utf-8", errors="replace", timeout=120, creationflags=proc.NO_WINDOW,
+                          check=False)
     if done.returncode or __version__ not in done.stdout:
         raise RuntimeError(f"도우미가 버전을 답하지 않았습니다({done.returncode}): {done.stdout[-200:]}{done.stderr[-300:]}")
     return Path(proc.console_python()).name
@@ -199,7 +200,7 @@ def _first_run(scratch: Path, holder: dict) -> str:
 def _sidebar(root: Path) -> str:
     from lecturehub.ui.library import Library
 
-    shown = Library(root).sidebar(date.today())
+    shown = Library(root).sidebar(datetime.now().astimezone().date())
     if not shown.get("ok"):
         raise RuntimeError(shown.get("error") or "수업 목록을 읽지 못했습니다")
     return f"과목 {len(shown['courses'])}개"
@@ -208,11 +209,54 @@ def _sidebar(root: Path) -> str:
 def _trial(scratch: Path, holder: dict) -> str:
     from lecturehub.index import demo
 
-    made = demo.make(scratch / "체험 학기")
+    made = demo.make(scratch / "예시 학기")
     if made.get("state") not in ("made", "ready"):
-        raise RuntimeError(f"체험 학기 상태: {made.get('state')}")
+        raise RuntimeError(f"예시 학기 상태: {made.get('state')}")
     holder["root"] = Path(made["root"])
     return str(made.get("state"))
+
+
+def _ai_link(trial_root: Path | None) -> str:
+    """The AI app link (D-072) as an AI app starts it: the worker with ``-m lecturehub.mcp`` on the trial
+    semester, initialize → tools/list → one tool call, every stdout line a JSON-RPC reply. The switch and the trial
+    course's consent are written to this check's temporary settings and trial folder only."""
+    from lecturehub.index import demo
+    from lecturehub.mcp.access import PROVIDER
+    from lecturehub.mcp.config import ARGS
+    from lecturehub.mcp.tools import DEFINITIONS
+    from lecturehub.transcription.consent import NOTICES, ConsentStore
+
+    from . import proc, settings, timetable
+
+    if trial_root is None:
+        raise RuntimeError("예시 학기가 없어 확인하지 못했습니다")
+    settings.save({"ai_link": {"enabled": True}})  # LECTUREHUB_SETTINGS points into the check's temporary folder
+    course = timetable.folder_name(demo.COURSE)
+    ConsentStore(Path(trial_root) / "_lecturehub" / "consent.json").grant(
+        PROVIDER, course, int(time.time() * 1000), NOTICES[PROVIDER], by="selfcheck")
+    messages = [{"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "selfcheck"}}},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "list_courses", "arguments": {}}}]
+    data = "".join(json.dumps(m, ensure_ascii=False) + "\n" for m in messages).encode("utf-8")
+    env = {**os.environ, "LECTUREHUB_ROOT": str(trial_root)}
+    done = subprocess.run([proc.console_python(), *ARGS], input=data, capture_output=True,
+                          timeout=60, env=env, creationflags=proc.NO_WINDOW, check=False)
+    if done.returncode:
+        raise RuntimeError(f"연결 프로그램이 {done.returncode}로 끝났습니다: {done.stderr.decode('utf-8', 'replace')[-300:]}")
+    replies = [json.loads(line) for line in done.stdout.decode("utf-8").splitlines()]  # any other output fails here
+    if [r.get("id") for r in replies] != [1, 2, 3] or any(r.get("jsonrpc") != "2.0" or "result" not in r for r in replies):
+        raise RuntimeError(f"JSON-RPC 응답이 맞지 않습니다: {done.stdout[:300]!r}")
+    if replies[0]["result"].get("protocolVersion") != "2025-06-18":
+        raise RuntimeError("버전 협상이 맞지 않습니다")
+    if [t["name"] for t in replies[1]["result"]["tools"]] != [t["name"] for t in DEFINITIONS]:
+        raise RuntimeError("도구 목록이 맞지 않습니다")
+    call = replies[2]["result"]
+    shown = json.loads(call["content"][0]["text"])
+    if call.get("isError") or [c["course"] for c in shown.get("courses", [])] != [course]:
+        raise RuntimeError(f"도구 호출 결과가 맞지 않습니다: {call['content'][0]['text'][:200]}")
+    return f"도구 {len(DEFINITIONS)}개, 과목 {len(shown['courses'])}개"
 
 
 def _agent_workspace() -> str:

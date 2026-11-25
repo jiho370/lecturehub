@@ -104,6 +104,50 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return connection
 
 
+def connect_readonly(path: str | Path, *, timeout: float = 2.0) -> sqlite3.Connection:
+    """Open an existing database for reading only (AI app link, D-072): nothing in its folder is created or changed.
+
+    The app keeps the database in WAL mode. A plain ``mode=ro`` open of a WAL database that nobody has open
+    creates ``-wal``/``-shm`` and, being read-only, cannot remove them on close (measured with SQLite 3.49).
+    So the open depends on what is there:
+
+    - ``-wal`` and ``-shm`` exist (the app or the recorder has the database open, or it was not closed cleanly):
+      ``mode=ro``. The reader joins the existing WAL index and sees everything committed, including what is
+      still only in the WAL. It never blocks a writer; while it reads, a checkpoint may stop short of the end.
+    - otherwise: ``mode=ro&immutable=1``. No WAL content exists to miss; the main file is read without locks and
+      no file is created. A ``-wal`` without ``-shm`` (left by a crash) also lands here: the main file alone is
+      read and whatever only that WAL holds is not seen until the app opens the database again. A writer starting during a call writes to its new WAL, not the main file, until it
+      checkpoints; a read caught by that is a query error, never a change to the database.
+
+    No write PRAGMA (no journal_mode, foreign_keys or functions that write); ``query_only`` refuses writes as a
+    second guard. The schema is checked like ``connect`` (D-051). A missing file raises FileNotFoundError.
+    """
+    database = Path(path)
+    if not database.is_file():
+        raise FileNotFoundError(f"데이터베이스가 없습니다: {database.name}")
+    shared = Path(f"{database}-wal").is_file() and Path(f"{database}-shm").is_file()
+    try:
+        return _open_readonly(database, shared, timeout)
+    except sqlite3.OperationalError:
+        if not shared:
+            raise
+        # WAL files left by a crash may need a recovery only a writer can do: read the main file instead
+        return _open_readonly(database, False, timeout)
+
+
+def _open_readonly(database: Path, shared: bool, timeout: float) -> sqlite3.Connection:
+    uri = database.resolve().as_uri() + ("?mode=ro" if shared else "?mode=ro&immutable=1")
+    connection = sqlite3.connect(uri, uri=True, timeout=timeout)
+    try:
+        connection.execute("PRAGMA query_only = ON")
+        check_schema_version(connection)
+        connection.row_factory = sqlite3.Row
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
+
 def _statements(script: str):
     """Split complete SQL statements, preserving trigger bodies and literals."""
     start = 0

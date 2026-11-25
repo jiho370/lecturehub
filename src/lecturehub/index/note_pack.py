@@ -7,6 +7,7 @@ the finished file comes back through ``lecture attach-note``.
 """
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -55,14 +56,28 @@ def _course_dir(root: Path, course: str) -> Path:
     return own  # made when the note is written
 
 
+def _ai_app_pages(connection: sqlite3.Connection) -> set[str]:
+    """Note pages an AI app saved through the AI app link (D-076), as normalised paths."""
+    try:
+        rows = connection.execute("SELECT path FROM StudyArtifact WHERE created_by = 'ai_app'").fetchall()
+    except sqlite3.Error:
+        return set()
+    return {os.path.normcase(os.path.abspath(str(r[0]))) for r in rows if r[0]}
+
+
 def pack(connection: sqlite3.Connection, root: Path, lecture_id: str) -> dict:
     root = Path(root)
     detail = lectures.lecture_detail(connection, lecture_id)
     course_dir = _course_dir(root, detail["course"])
     notes_dir = organize.folder_for(course_dir, "정리본") if course_dir.is_dir() else course_dir / "정리본"
-    existing = sorted((p for p in notes_dir.glob("*") if p.suffix.lower() in HTML and _is_note(p)),
+    # a page an AI app saved is never the style to copy nor the note to revise in place: [정리본 만들기] and the
+    # /lecture-note skill write the app's own note next to it (integration review: …_ChatGPT_2.html, …_ChatGPT_ChatGPT)
+    by_ai = _ai_app_pages(connection)
+    existing = sorted((p for p in notes_dir.glob("*") if p.suffix.lower() in HTML and _is_note(p)
+                       and os.path.normcase(os.path.abspath(str(p))) not in by_ai),
                       key=lambda p: p.stat().st_mtime) if notes_dir.is_dir() else []
-    attached = [n["path"] for n in detail.get("notes", []) if n.get("exists") and str(n["path"]).lower().endswith(HTML)]
+    attached = [n["path"] for n in detail.get("notes", []) if n.get("exists") and str(n["path"]).lower().endswith(HTML)
+                and not n.get("by_ai_app")]
     stem = _named_like(existing[-1] if existing else None, course_dir.name, detail["date"], detail["label"])
     target, n = notes_dir / f"{stem}.html", 1
     while target.exists() and str(target) not in attached:

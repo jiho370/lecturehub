@@ -78,13 +78,13 @@ def test_rail_button_opens_the_note_collection_and_the_exam_screen_stays_reachab
 
 
 def test_settings_and_first_run_offer_the_folder_layout_and_recording_cleanup():
-    settings = _body("async function openSettings()", "const TT_DAYS")
+    settings = _body("async function openSettings(group)", "const TT_DAYS")
     for call in ("api.folder_layout_get()", "api.folder_layout_set(", "api.audio_cleanup_get()", "api.audio_cleanup_set("):
         assert call in settings, call
-    assert "일 지난 녹음은 휴지통으로 (정리본이 있는 회차만)" in _body("function cleanupRow(", "async function openSettings()")
+    assert "일 지난 녹음은 휴지통으로 (정리본이 있는 회차만)" in _body("function cleanupRow(", "async function openSettings(group)")
     setup = _body("function runSetup()", "function startFailed(")
     assert '"폴더 구성"' in setup and "api.folder_layout_get(st.term" in setup
-    assert 'api.setup_apply(st.parent, st.term, rows, st.termStart || "", st.termEnd || "", st.style || "")' in setup
+    assert 'api.setup_apply(st.parent, st.term, rows, st.termStart || "", st.termEnd || "", st.style || "", st.base || "")' in setup
 
 
 def test_hold_screen_asks_one_question_at_a_time_with_the_plain_reason():
@@ -95,7 +95,8 @@ def test_hold_screen_asks_one_question_at_a_time_with_the_plain_reason():
 
 
 def test_qa_helper_stays_out_of_the_public_edition():
-    assert '[["qaBtn", "qa"], ["capBtn", "captions"], ["maiHint", "mai"]].forEach(([id, k]) => { const el = $(id); if (el && !ed(k)) { el.hidden = true; el.style.display = "none"; } });' in JS
+    # the room-booking pair in front is owner-only and cut from the public page (D-087); both forms hide these three
+    assert '["qaBtn", "qa"], ["capBtn", "captions"], ["maiHint", "mai"]].forEach(([id, k]) => { const el = $(id); if (el && !ed(k)) { el.hidden = true; el.style.display = "none"; } });' in JS
 
 def test_side_view_takes_the_right_third_and_comes_back():
     """User 2026-11-14: [옆으로 보기] puts the window on the right third at full height, live transcript + a transcript."""

@@ -158,10 +158,87 @@ def recorder_toml(out_dir: Path, timetable: Path | None) -> str:
 
 def info() -> dict:
     root = settings.data_root()
-    return {"needs_setup": root is None, "trial": bool(settings.get("trial")), "root": str(root) if root else "",
-            "term": suggested_term(),
+    opened = prepared()
+    return {"needs_setup": root is None or opened is not None, "trial": bool(settings.get("trial")),
+            "root": str(root) if root else "", "term": suggested_term(),
             "parent": str(suggested_parent()), "parent_notes": folder_notes(str(suggested_parent())),
-            "tools": tools.status(check_login=False)}
+            "tools": tools.status(check_login=False), "prepared": opened}
+
+
+# ---------- D-086: the semester folder is made before the timetable step, so an AI app (lecturehub MCP) can already
+# put the timetable in. ``setup_open`` in settings.json says the wizard has not finished: the app keeps showing it.
+OPEN_KEY = "setup_open"
+
+
+def _root_of(parent: str, term: str, layout: str) -> tuple[Path, str]:
+    term = (term or "").strip()
+    if not _TERM.match(term):
+        raise SetupError("학기 이름은 '26-2'처럼 짧게 적어 주세요.")
+    if not parent or not str(parent).strip():
+        raise SetupError("학기 폴더를 고르세요.")
+    base = Path(parent).expanduser()
+    if not base.is_absolute():
+        raise SetupError("폴더는 전체 경로여야 합니다.")
+    if layout and layout not in settings.LAYOUTS:
+        raise SetupError("폴더 방식을 고르세요")
+    if layout == "existing" and not base.is_dir():
+        raise SetupError("이미 쓰는 학기 폴더를 고르세요.")
+    return (base if layout == "existing" else base / term), term
+
+
+def prepared() -> dict | None:
+    """{"root", "term", "layout"} of a folder ``prepare`` made while the wizard is still open, else None."""
+    saved = settings.get(OPEN_KEY)
+    root = settings.data_root()
+    if not isinstance(saved, dict) or root is None:
+        return None
+    return {"root": str(root), "term": str(saved.get("term") or ""), "layout": str(saved.get("layout") or ""),
+            "parent": str(saved.get("parent") or "")}
+
+
+def prepare(parent: str, term: str, layout: str = "") -> dict:
+    """Make ``<parent>/<term>`` (or the picked folder itself for the "existing" layout) with its ``_lecturehub`` and an
+    empty library, and remember it, before the timetable is known. Nothing in the folder is changed besides that; the
+    timetable and the course folders come with ``apply(..., prepared=True)`` or an AI app's ``set_timetable``."""
+    root, term = _root_of(parent, term, layout)
+    try:
+        (root / "_lecturehub" / "recordings").mkdir(parents=True, exist_ok=True)
+        table = root / "시간표.csv"
+        write_recorder_config(root, table if table.exists() else None, replace=bool(settings.get("trial")))
+    except OSError as exc:
+        raise SetupError(f"폴더를 만들 수 없습니다: {exc}") from exc
+    settings.save({"data_root": str(root), "term": term, "trial": None,
+                   OPEN_KEY: {"term": term, "layout": layout, "parent": str(parent)}})
+    if layout:
+        settings.set_folder_layout(layout)
+    try:  # the AI app link reads the library (lecturehub MCP refuses without one)
+        from .library import Library
+
+        Library(root)._ensure()
+    except Exception:  # noqa: BLE001 - the folder is made; the library is built again at the end of the wizard
+        applog.swallowed("처음 설정 중 수업 목록 만들기")
+    return {"ok": True, "root": str(root), **timetable_state(root)}
+
+
+def timetable_state(root: Path) -> dict:
+    """What the timetable step shows: the courses and term in the folder now, and ``base``, a fingerprint of both
+    files. The wizard sends ``base`` back when it saves: a file that changed in between (an AI app's set_timetable)
+    is not written over (``apply`` refuses and the wizard shows the new content)."""
+    import hashlib
+
+    root = Path(root)
+    digest = hashlib.sha256()
+    for file in (timetable.path(root), root / "_lecturehub" / "term.json"):
+        try:
+            digest.update(file.read_bytes())
+        except OSError:
+            digest.update(b"\0none")
+        digest.update(b"\0|")
+    try:
+        courses = timetable.read(root)
+    except (OSError, ValueError):
+        courses = []
+    return {"courses": courses, "term": timetable.load_term(root), "base": digest.hexdigest()}
 
 
 def layout_preview(term: str, courses: list[str], style: str) -> dict:
@@ -181,27 +258,33 @@ def layout_preview(term: str, courses: list[str], style: str) -> dict:
     return {"style": style, "label": settings.LAYOUT_NAMES[style], "lines": lines}
 
 
+CHANGED = ("그 사이 시간표가 바뀌었습니다(Codex가 넣었을 수 있습니다). 아래에 지금 들어 있는 시간표를 다시 불러왔습니다. "
+           "확인한 뒤 다시 누르세요.")
+
+
 def apply(parent: str, term: str, courses: list[dict], term_start: str = "", term_end: str = "",
-          layout: str = "") -> dict:
-    """Create ``<parent>/<term>``, its course folders and 시간표.csv, write recorder.toml and remember the folder."""
-    term = (term or "").strip()
-    if not _TERM.match(term):
-        raise SetupError("학기 이름은 '26-2'처럼 짧게 적어 주세요.")
-    if not parent or not str(parent).strip():
-        raise SetupError("학기 폴더를 고르세요.")
-    base = Path(parent).expanduser()
-    if not base.is_absolute():
-        raise SetupError("폴더는 전체 경로여야 합니다.")
+          layout: str = "", *, base: str | None = None) -> dict:
+    """Create ``<parent>/<term>``, its course folders and 시간표.csv, write recorder.toml and remember the folder.
+
+    D-086: when ``prepare`` already made the folder, the wizard's rows are the whole timetable (it showed what was
+    there and the user may have edited it), so 시간표.csv is written through ``timetable.write`` (which keeps a copy
+    of the previous file) and the term follows the two date boxes. ``base`` is the fingerprint the wizard last read
+    (``timetable_state``); when the files differ now, nothing is written and the answer carries what is there."""
+    root, term = _root_of(parent, term, layout)
     rows = clean_courses(courses)
-    if layout and layout not in settings.LAYOUTS:
-        raise SetupError("폴더 방식을 고르세요")
     existing = layout == "existing"  # the picked folder *is* the semester folder; only _lecturehub is added
-    if existing and not base.is_dir():
-        raise SetupError("이미 쓰는 학기 폴더를 고르세요.")
-    root = base if existing else base / term
+    opened = prepared()
+    if opened is not None:
+        if Path(opened["root"]) != root:
+            raise SetupError("앞에서 만든 학기 폴더와 다릅니다. 앱을 다시 켜고 처음 설정을 이어 하세요.")
+        now = timetable_state(root)
+        if base is not None and now["base"] != base:
+            return {"ok": False, "changed": True, "error": CHANGED, **now}
     try:
         (root / "_lecturehub" / "recordings").mkdir(parents=True, exist_ok=True)
-        if (term_start or "").strip() or (term_end or "").strip():
+        if opened is not None:
+            timetable.save_term(root, term_start, term_end)  # both empty clears what an AI app may have set
+        elif (term_start or "").strip() or (term_end or "").strip():
             timetable.save_term(root, term_start, term_end)
         # A course with no class time cannot be a timetable row (a row needs a weekday and a time). Before
         # 2026-11-16 it got a folder and then silently was no course at all; now it becomes a '수업 외' topic,
@@ -211,7 +294,15 @@ def apply(parent: str, term: str, courses: list[dict], term_start: str = "", ter
             for course in timed:
                 (root / course["folder"]).mkdir(exist_ok=True)
         table = root / "시간표.csv"
-        if timed and not table.exists():
+        if opened is not None and table.exists():  # the wizard showed this file's rows: its list is the timetable now
+            if existing:  # the folder as it is: no course folders added, the previous file kept under backups
+                backup = root / "_lecturehub" / "backups" / f"시간표_{date.today():%Y%m%d}_처음설정.csv"
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                backup.write_bytes(table.read_bytes())
+                table.write_text(timetable.to_csv(timed), encoding="utf-8-sig", newline="")
+            else:
+                timetable.write(root, timed)
+        elif timed and not table.exists():
             table.write_text(timetable_csv(timed), encoding="utf-8-sig", newline="")
         extra, skipped = [], []
         for course in rows:
@@ -226,7 +317,7 @@ def apply(parent: str, term: str, courses: list[dict], term_start: str = "", ter
         write_recorder_config(root, table if table.exists() else None, replace=bool(settings.get("trial")))
     except OSError as exc:
         raise SetupError(f"폴더를 만들 수 없습니다: {exc}") from exc
-    settings.save({"data_root": str(root), "term": term, "trial": None})  # leaving the trial semester
+    settings.save({"data_root": str(root), "term": term, "trial": None, OPEN_KEY: None})  # leaving the trial semester
     if layout:
         settings.set_folder_layout(layout)
     try:  # build the library now, so the first recording after the restart links to its class

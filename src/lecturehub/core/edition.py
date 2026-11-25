@@ -1,7 +1,7 @@
 """Which build this is: the owner's full app or the public edition (release prep, 2026-11).
 
 The public export writes ``edition.json`` next to this file and deletes the modules of the removed features
-(assignment helper, MAI automation, live Q&A helper, the owner's 암기장 link). The window hides their buttons, so nothing calls a deleted
+(MAI automation, live Q&A helper, room booking, the owner's 암기장 link). The window hides their buttons, so nothing calls a deleted
 module. ``LECTUREHUB_EDITION=public`` (or ``full``) overrides the file for tests; an installed (frozen) public
 build ignores the override and stays public.
 """
@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 MARKER = Path(__file__).with_name("edition.json")
-PUBLIC_OFF = ("assignment", "mai", "qa", "memorizer", "gsr_prefs", "captions", "etl_board")  # features the public edition does not have (gsr_prefs: saved companions + room order; etl_board: the LearningX board is read through its unpublished API, owner only — user 2026-11-21)
+PUBLIC_OFF = ("mai", "qa", "gsr", "gsr_prefs", "captions", "etl_board")  # features the public edition does not have (gsr_prefs: saved companions + room order; etl_board: the LearningX board is read through its unpublished API, owner only — user 2026-11-21)
 
 
 def _marked_public() -> bool:

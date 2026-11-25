@@ -127,15 +127,18 @@ def _gone(connection: sqlite3.Connection) -> set[str]:
     return hidden_ids(connection)
 
 
-def lecture_list(connection: sqlite3.Connection) -> list[dict]:
+def lecture_list(connection: sqlite3.Connection, course_id: str | None = None) -> list[dict]:
     """All lectures, newest first, with the n-th lecture of its course and quick status.
 
-    A lecture whose only content was a recording the user threw away (D-058) is left out."""
+    A lecture whose only content was a recording the user threw away (D-058) is left out. ``course_id``: that
+    course's lectures only (the same items as in the full list: numbers count within a course)."""
     rows = connection.execute(
         "SELECT l.id, l.date, l.session_index, l.title, c.id, c.folder_name, "
         "(SELECT count(*) FROM MediaAsset m WHERE m.lecture_id = l.id AND m.is_master = 1), "
         "(SELECT count(*) FROM Transcript t WHERE t.lecture_id = l.id) "
-        "FROM Lecture l JOIN Course c ON c.id = l.course_id ORDER BY l.date, l.session_index, l.id").fetchall()
+        "FROM Lecture l JOIN Course c ON c.id = l.course_id "
+        + ("WHERE c.id = ? " if course_id is not None else "")
+        + "ORDER BY l.date, l.session_index, l.id", (course_id,) if course_id is not None else ()).fetchall()
     gone = _gone(connection)
     only_gone = set()
     if gone:
@@ -220,13 +223,22 @@ def lecture_detail(connection: sqlite3.Connection, lecture_id: str) -> dict:
             "ORDER BY m.title", (lecture_id,))]
     notes = []
     # Note files only; evidence-linked notes (kind lecture_note) live in the DB and load via study.notes (S4).
-    for r in connection.execute("SELECT id, path, kind, lecture_ids FROM StudyArtifact WHERE kind != 'lecture_note'"):
+    for r in connection.execute("SELECT id, path, kind, lecture_ids, created_by, inputs FROM StudyArtifact "
+                                "WHERE kind != 'lecture_note'"):
         try:
             ids = json.loads(r[3] or "[]")
         except ValueError:
             ids = []
         if lecture_id in ids:
-            notes.append({"id": r[0], "path": r[1], "kind": r[2], "exists": Path(r[1]).is_file()})
+            note = {"id": r[0], "path": r[1], "kind": r[2], "exists": Path(r[1]).is_file(),
+                    "by_ai_app": r[4] == "ai_app"}  # D-076: saved by an AI app through the AI app link
+            if note["by_ai_app"]:  # who wrote it, as stored when it was saved (honesty rule §8.14C)
+                try:
+                    written = json.loads(r[5] or "{}").get("written_by")
+                except (ValueError, AttributeError):
+                    written = None
+                note["written_by"] = written if isinstance(written, str) and written else "AI 앱이 씀"
+            notes.append(note)
     detail = {
         "id": row[0], "date": row[1], "weekday": WEEKDAYS[d.weekday()], "session_index": row[2], "title": row[3],
         "lecture_type": row[4], "course_id": row[5], "course": row[6], "course_code": row[7], "n": n,

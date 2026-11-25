@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from lecturehub.core import edition
 from lecturehub.ui import app as app_module
 from lecturehub.ui.app import Api
 
@@ -98,14 +97,6 @@ const { chromium } = require(process.env.PW);
 class _Library:
     def __init__(self, root):
         self.root = root
-        self.granted = []
-
-    def assignment_notice(self):
-        return "과제 도우미 안내"
-
-    def assignment_consent(self, course):
-        self.granted.append(course)
-        return {"ok": True}
 
 
 class _Window:
@@ -134,7 +125,7 @@ RISKY = ("tool.py", "tool.pyw", "help.chm", "add.xll", "macro.docm", "sheet.xlsm
 
 
 def test_SEC_008_one_allow_list_guards_every_open(tmp_path, monkeypatch):
-    """open_path, open_material, open_folder and assignment_open share core.safe_open (security review 2026-11-13)."""
+    """open_path, open_material and open_folder share core.safe_open (security review 2026-11-13)."""
     from lecturehub.core import safe_open
     from lecturehub.materials import opener
     from lecturehub.ui.backend import Backend
@@ -166,22 +157,24 @@ def test_SEC_008_one_allow_list_guards_every_open(tmp_path, monkeypatch):
     assert backend.open_folder(str(jobs))["ok"] and opened == [str(jobs)]
 
 
-def test_SEC_005_assignment_consent_is_stored_only_with_the_native_dialog_token(tmp_path, monkeypatch):
-    monkeypatch.setenv("LECTUREHUB_EDITION", "full")  # mock-only legacy consent contract
-    library = _Library(tmp_path)
-    api = Api(object(), library)
-    assert api.assignment_consent("도시계")["ok"] is False  # straight from page JS: refused
-    assert api.assignment_consent("도시계", "made-up")["ok"] is False
+def test_SEC_005_consent_token_comes_only_from_the_native_dialog_and_is_used_once(tmp_path):
+    api = Api(object(), _Library(tmp_path))
+    assert api._take_consent_token(None, "gemini_transcribe", "도시계") is False  # straight from page JS: refused
+    assert api._take_consent_token("made-up", "gemini_transcribe", "도시계") is False
     api._main = _Window(False)
-    assert api.consent_confirm("claude_assignment", "도시계") == {"ok": True, "yes": False}
+    assert api.consent_confirm("gemini_transcribe", "도시계") == {"ok": True, "yes": False}
     api._main = _Window(True)
-    q = api.consent_confirm("claude_assignment", "도시계")
+    q = api.consent_confirm("gemini_transcribe", "도시계")
     assert q["yes"] and "도시계" in api._main.asked[0][1]
-    assert api.assignment_consent("구조역학", q["token"])["ok"] is False  # token is for another course (and is used up)
-    q = api.consent_confirm("claude_assignment", "도시계")
-    assert api.assignment_consent("도시계", q["token"])["ok"] and library.granted == ["도시계"]
-    assert api.assignment_consent("도시계", q["token"])["ok"] is False  # one time only
+    assert api._take_consent_token(q["token"], "gemini_transcribe", "구조역학") is False  # another course (used up)
+    q = api.consent_confirm("gemini_transcribe", "도시계")
+    assert api._take_consent_token(q["token"], "whisper_groq", "도시계") is False  # another provider (used up)
+    q = api.consent_confirm("gemini_transcribe", "도시계")
+    assert api._take_consent_token(q["token"], "gemini_transcribe", "도시계") is True
+    assert api._take_consent_token(q["token"], "gemini_transcribe", "도시계") is False  # one time only
     assert api.consent_confirm("other", "도시계")["ok"] is False
+    # the assignment helper was removed (2026-11-22): its old provider is unknown now, never a dialog
+    assert api.consent_confirm("claude_assignment", "도시계")["ok"] is False
 
 
 class _Backend:
@@ -220,10 +213,3 @@ def test_SEC_006_stored_transcription_consent_needs_the_token_but_once_only_and_
     agreed = _Backend("구조역학", granted=True)
     assert Api(agreed, _Library(tmp_path)).transcription_start(True)["ok"]
     assert Api(agreed, _Library(tmp_path)).transcription_start(False)["ok"]
-
-
-@pytest.mark.skipif(not edition.has("assignment"), reason="Assignment helper is excluded from the public edition")
-def test_SEC_007_assignment_provider_matches_the_pack():
-    from lecturehub.index import assignment_pack
-
-    assert app_module.ASSIGNMENT_PROVIDER == assignment_pack.PROVIDER

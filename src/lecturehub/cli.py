@@ -25,12 +25,17 @@ _TRACK_CLI_MODULES = [
     "lecturehub.canonical.cli",     # E
     "lecturehub.ui.cli",            # B
     "lecturehub.booking.cli",       # 그스룸 예약(P-019)
+    "lecturehub.mcp.cli",           # AI 앱 연결(D-072)
 ]
 _REGISTERED_MODULES: set[str] = set()
 
 
 def _register_all() -> None:
+    from lecturehub.core import edition
+
     for name in _TRACK_CLI_MODULES:
+        if name == "lecturehub.booking.cli" and not edition.has("gsr"):
+            continue
         if name in _REGISTERED_MODULES:
             continue
         try:
@@ -73,6 +78,11 @@ def selfcheck(
         Path(out).write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
     for row in result["steps"]:
         typer.echo(f"{'통과' if row['ok'] else '실패'}  {row['step']} — {row['detail']} ({row['seconds']}초)")
+        if not row["ok"]:  # where it broke: module file and line of each frame, never values (the build log is read)
+            import re
+
+            for frame in re.findall(r'File "[^"]*[\\/]([^"\\/]+)", line (\d+), in (\S+)', row.get("trace") or "")[-4:]:
+                typer.echo(f"      {frame[0]}:{frame[1]} {frame[2]}")
     raise typer.Exit(0 if result["ok"] else 1)
 
 

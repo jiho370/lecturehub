@@ -9,6 +9,12 @@ import sys
 import threading
 
 _ICON_ID = 0x4C48  # one icon per window; a newer notice replaces the older balloon
+_tray = None  # D-084: persistent owner with click callbacks, installed by the window
+
+
+def set_tray(tray):
+    global _tray
+    _tray = tray
 
 
 def _structs():
@@ -36,6 +42,8 @@ def _structs():
 def toast(title: str, message: str, *, window_title: str = "Lecture Hub", icon: str | None = None,
           keep_seconds: float = 30.0) -> bool:
     """Show a notification owned by the app window. True when Windows accepted it."""
+    if _tray is not None and _tray.toast(title, message):
+        return True
     if sys.platform != "win32":
         return False
     import ctypes

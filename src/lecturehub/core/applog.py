@@ -90,15 +90,18 @@ def _roll(path: Path) -> None:
         pass
 
 
-def setup(process: str) -> Path | None:
+def setup(process: str, *, network: bool = True) -> Path | None:
     """Start logging for this process (``"app"`` or ``"worker"``); returns the log file, or ``None`` when the
     folder cannot be used. Safe to call twice.
 
     Also the start of a process that may talk to a service, so this is where Python is told to trust what
     Windows trusts (core/net.py). That happens once the log file is attached, so a failure of it is written to
-    the log; with an unusable log folder it still happens, there is only nowhere to write a failure."""
+    the log; with an unusable log folder it still happens, there is only nowhere to write a failure.
+    ``network=False``: a process that never talks to a service (the AI app link, ``-m lecturehub.mcp``) skips
+    that step, and with it the import of every HTTP/TLS library."""
     if _state["process"]:
         return log_dir() / f"{_state['process']}.log"
+    certificates = _system_certificates if network else (lambda: None)
     logging.raiseExceptions = False
     try:
         folder = log_dir()
@@ -113,13 +116,13 @@ def setup(process: str) -> Path | None:
         LOG.setLevel(logging.INFO)
         LOG.propagate = False
     except OSError:
-        _system_certificates()
+        certificates()
         return None
     _state["process"] = process
     _hook_uncaught()
     _hook_hard_crash(folder / f"{process}_crash.log")
     LOG.info("시작: %s", describe())
-    _system_certificates()  # after the handler: a failure is a line in this log, right under the start line
+    certificates()  # after the handler: a failure is a line in this log, right under the start line
     return path
 
 
@@ -145,7 +148,12 @@ def describe() -> str:
         app = f"Lecture Hub {__version__} ({edition.name()}{', 설치판' if getattr(sys, 'frozen', False) else ''})"
     except Exception:  # noqa: BLE001
         app = "Lecture Hub"
-    return f"{app} · Python {platform.python_version()} · {platform.platform()}"
+    if sys.platform == "win32":  # platform.platform() asks uname(), whose node name loads socket for the host name
+        release, version, csd, _ = platform.win32_ver()
+        system = "-".join(part for part in ("Windows", release, version, csd) if part)
+    else:
+        system = platform.platform()
+    return f"{app} · Python {platform.python_version()} · {system}"
 
 
 def _hook_uncaught() -> None:

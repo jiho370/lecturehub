@@ -116,3 +116,36 @@ def test_month_view_and_next_exam_d_day(library):
 def test_spoken_dates_ignore_course_content_and_far_or_past_dates(text):
     """Real-data check 2026-09-29: 22 candidates → 2 after same-sentence/near/horizon rules."""
     assert cal.spoken_dates(text, date(2026, 9, 22)) == []
+
+
+def test_presentation_and_report_kinds_after_0009(tmp_path):
+    """User 2026-11-24: 발표·보고서 get their own kinds; rows written before 0009 survive the rebuild."""
+    path = tmp_path / "lecturehub.sqlite"
+    with closing(db.connect(path)) as connection:
+        db.migrate(connection)
+        connection.execute("DELETE FROM schema_version WHERE version=9")
+        connection.commit()
+    # rebuild an 0008-shaped table holding one row, then let 0009 run on it
+    with closing(db.connect(path)) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DROP TABLE CalendarEvent")
+        script = (db.resources.files("lecturehub.core") / "migrations" / "0006_calendar.sql").read_text(encoding="utf-8")
+        for statement in db._statements(script):
+            connection.execute(statement)
+        connection.execute("INSERT INTO Course VALUES ('gj','GJ','도시계','gj','26-2')")
+        old = cal.add(connection, kind="other", title="예비발표(합성)", day="2026-12-02", course_id="gj", start="10:00")
+        connection.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE CalendarEvent SET kind='presentation' WHERE id=?", (old,))
+        connection.rollback()
+    with closing(db.connect(path)) as connection:
+        assert db.migrate(connection) == [9]
+        assert tuple(connection.execute("SELECT kind, title, start_ms FROM CalendarEvent WHERE id=?", (old,)).fetchone()) \
+            == ("other", "예비발표(합성)", 36_000_000)
+        cal.update(connection, old, kind="presentation")
+        cal.add(connection, kind="report", title="보고서(합성)", day="2026-12-15", course_id="gj", start="23:59")
+        connection.commit()
+        labels = sorted(e["kind_label"] for e in cal.events(connection, "2026-12-01", "2026-12-31"))
+        assert labels == ["발표", "보고서"]
+        with pytest.raises(sqlite3.DatabaseError, match="never deleted"):
+            connection.execute("DELETE FROM CalendarEvent")

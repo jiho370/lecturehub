@@ -34,9 +34,9 @@ def clean(address: str) -> str:
     return f"https://{host}" + (f":{port}" if port and port != 443 else "")
 
 
-def base() -> str:
+def base(*, saved: dict | None = None) -> str:
     """The Canvas site in use (settings ``etl_base``, else SNU's eTL)."""
-    stored = settings.get("etl_base")
+    stored = settings.get("etl_base") if saved is None else saved.get("etl_base")
     if stored:
         try:
             return clean(str(stored))
@@ -54,9 +54,10 @@ def is_default() -> bool:
     return base() == DEFAULT
 
 
-def token_fits() -> bool:
+def token_fits(*, saved: dict | None = None) -> bool:
     """The saved token was made for the site in use (tokens saved before 2026-11-20 belong to SNU's eTL)."""
-    return (settings.get("etl_token_host") or host(DEFAULT)) == host()
+    stored = settings.get("etl_token_host") if saved is None else saved.get("etl_token_host")
+    return (stored or host(DEFAULT)) == host(base(saved=saved))
 
 
 def remember_token_site() -> None:

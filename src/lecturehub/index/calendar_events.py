@@ -22,9 +22,19 @@ from lecturehub.core.textio import read_text_any
 from lecturehub.core.events import EventStore
 from lecturehub.core.ids import new_ulid
 
-KINDS = ("exam", "quiz", "assignment", "closure", "personal", "other")
-KIND_LABEL = {"exam": "시험", "quiz": "퀴즈", "assignment": "과제", "closure": "휴강", "personal": "개인", "other": "기타"}
+KINDS = ("exam", "quiz", "assignment", "presentation", "report", "closure", "personal", "other")  # 발표·보고서: 0009 (사용자 2026-11-24)
+KIND_LABEL = {"exam": "시험", "quiz": "퀴즈", "assignment": "과제", "presentation": "발표", "report": "보고서", "closure": "휴강", "personal": "개인", "other": "기타"}
 FIELDS = ("course_id", "kind", "title", "date", "date_precision", "date_text", "start_ms", "end_ms", "note")
+# D-076: an event an AI app added through the AI app link is a typed one (source 'user', no schema change) whose
+# source_ref starts with this; only such events may later be changed or cancelled by the AI app.
+AI_APP_REF = "ai_app:"
+
+
+def by_ai_app(row) -> bool:
+    if row is None:
+        return False
+    ref = row["source_ref"]
+    return row["source"] == "user" and isinstance(ref, str) and ref.startswith(AI_APP_REF)
 
 
 def _now_ms() -> int:
@@ -51,8 +61,8 @@ def _check(values: dict) -> None:
 def add(connection: sqlite3.Connection, *, kind: str, title: str, day: str, course_id: str | None = None,
         start: str | None = None, end: str | None = None, note: str = "", source: str = "user",
         source_ref: str | None = None, status: str = "confirmed", date_precision: str = "day",
-        date_text: str | None = None) -> str:
-    """Insert one event; the caller commits."""
+        date_text: str | None = None, by: str | None = None) -> str:
+    """Insert one event; the caller commits. ``by`` (e.g. "ai_app") is written into the Event."""
     values = {"kind": kind, "title": title.strip(), "date": day}
     _check(values)
     event_id, now = new_ulid(), _now_ms()
@@ -62,11 +72,12 @@ def add(connection: sqlite3.Connection, *, kind: str, title: str, day: str, cour
         (event_id, course_id, kind, title.strip(), day, date_precision, date_text, _clock_ms(start), _clock_ms(end),
          note or "", source, source_ref, status, now, now))
     EventStore(connection).append("CALENDAR_ADDED", "CalendarEvent", event_id,
-                                  {"kind": kind, "date": day, "source": source, "status": status})
+                                  {"kind": kind, "date": day, "source": source, "status": status}
+                                  | ({"by": by} if by else {}))
     return event_id
 
 
-def update(connection: sqlite3.Connection, event_id: str, **changes) -> None:
+def update(connection: sqlite3.Connection, event_id: str, *, by: str | None = None, **changes) -> None:
     """Change fields of a user/eTL event (or edit a candidate before confirming). Caller commits."""
     row = connection.execute("SELECT * FROM CalendarEvent WHERE id=?", (event_id,)).fetchone()
     if row is None:
@@ -88,10 +99,11 @@ def update(connection: sqlite3.Connection, event_id: str, **changes) -> None:
     sets = ", ".join(f"{k}=?" for k in changes)
     connection.execute(f"UPDATE CalendarEvent SET {sets}, updated_at=? WHERE id=?",
                        (*changes.values(), _now_ms(), event_id))
-    EventStore(connection).append("CALENDAR_CHANGED", "CalendarEvent", event_id, {"before": before, "after": changes})
+    EventStore(connection).append("CALENDAR_CHANGED", "CalendarEvent", event_id,
+                                  {"before": before, "after": changes} | ({"by": by} if by else {}))
 
 
-def set_status(connection: sqlite3.Connection, event_id: str, status: str, reason: str = "") -> None:
+def set_status(connection: sqlite3.Connection, event_id: str, status: str, reason: str = "", *, by: str = "user") -> None:
     if status not in ("confirmed", "cancelled"):
         raise ValueError("status must be confirmed or cancelled")
     row = connection.execute("SELECT status, source FROM CalendarEvent WHERE id=?", (event_id,)).fetchone()
@@ -99,7 +111,46 @@ def set_status(connection: sqlite3.Connection, event_id: str, status: str, reaso
         raise ValueError("없는 일정입니다")
     connection.execute("UPDATE CalendarEvent SET status=?, updated_at=? WHERE id=?", (status, _now_ms(), event_id))
     EventStore(connection).append("CALENDAR_STATUS", "CalendarEvent", event_id,
-                                  {"from": row[0], "to": status, "reason": reason, "by": "user"})
+                                  {"from": row[0], "to": status, "reason": reason, "by": by})
+
+
+def snapshot(connection: sqlite3.Connection, event_id: str) -> dict | None:
+    """The changeable fields and the status of one event (what an undo compares and puts back)."""
+    row = connection.execute(f"SELECT {', '.join(FIELDS)}, status FROM CalendarEvent WHERE id=?", (event_id,)).fetchone()
+    return dict(zip((*FIELDS, "status"), tuple(row), strict=True)) if row is not None else None
+
+
+def restore(connection: sqlite3.Connection, event_id: str, values: dict, *, by: str) -> None:
+    """Put back fields and status saved by :func:`snapshot` (an undo, D-076). A status may go back to 'candidate',
+    which ``set_status`` does not offer. Rows are never deleted. Caller commits."""
+    current = snapshot(connection, event_id)
+    if current is None:
+        raise ValueError("없는 일정입니다")
+    wanted = {k: values[k] for k in (*FIELDS, "status") if k in values}
+    if wanted.get("status", current["status"]) not in ("candidate", "confirmed", "cancelled"):
+        raise ValueError("알 수 없는 상태입니다")
+    _check({**current, **wanted})
+    changed = {k: v for k, v in wanted.items() if current[k] != v}
+    if not changed:
+        return
+    sets = ", ".join(f"{k}=?" for k in changed)
+    connection.execute(f"UPDATE CalendarEvent SET {sets}, updated_at=? WHERE id=?",
+                       (*changed.values(), _now_ms(), event_id))
+    EventStore(connection).append("CALENDAR_CHANGED", "CalendarEvent", event_id,
+                                  {"before": {k: current[k] for k in changed}, "after": changed, "by": by})
+
+
+def last_change_by(connection: sqlite3.Connection, event_id: str) -> str:
+    """Who made the latest change of an event, from its Events: "ai_app", "user", ... (an Event without "by" comes
+    from the app's own screen, i.e. the user)."""
+    row = connection.execute("SELECT payload_json FROM Event WHERE subject_type='CalendarEvent' AND subject_id=? "
+                             "ORDER BY at DESC, id DESC LIMIT 1", (event_id,)).fetchone()
+    if row is None:
+        return "user"
+    try:
+        return str(json.loads(row[0]).get("by") or "user")
+    except (ValueError, AttributeError):
+        return "user"
 
 
 def _course_names(connection) -> dict[str, str]:
@@ -110,6 +161,7 @@ def _row_dict(connection, row, columns) -> dict:
     item = dict(zip(columns, row, strict=True))
     item["course"] = _course_names(connection).get(item["course_id"]) if item["course_id"] else None
     item["kind_label"] = KIND_LABEL[item["kind"]]
+    item["by_ai_app"] = by_ai_app(item)
     return item
 
 

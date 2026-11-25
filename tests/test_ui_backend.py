@@ -145,6 +145,9 @@ class _ClosingBackend:
 
 def _closing_api(monkeypatch, *, minimize_fails=False, toast_fails=False):
     """An Api whose window commands and Windows notifications are recorded, never sent (no real window is touched)."""
+    from lecturehub.ui import tray
+
+    monkeypatch.setattr(tray, "session_ending", lambda: False)
     from lecturehub.ui import app as ui_app
     from lecturehub.ui import notify
 
@@ -186,6 +189,9 @@ def test_closing_the_window_while_recording_minimizes_it_and_says_why_once_per_r
 
 
 def test_closing_the_window_when_not_recording_closes_and_stops_the_helpers(monkeypatch):
+    from lecturehub.core.startup import set_close_choice
+
+    set_close_choice(False)  # D-084: an explicit quit-on-close choice
     api, backend, commands, toasts = _closing_api(monkeypatch)
     backend.recording = False
     assert api._on_main_closing() is True

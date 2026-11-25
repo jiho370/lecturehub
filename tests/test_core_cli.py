@@ -22,7 +22,7 @@ def test_db_init_unicode_root_is_idempotent_and_contained(tmp_path):
     database = root / "_lecturehub" / "lecturehub.sqlite"
     with sqlite3.connect(database) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert connection.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 8
+        assert connection.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 9
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert original.read_text(encoding="utf-8") == "합성 원본"
     assert {path.name for path in root.iterdir()} == {"원본.txt", "_lecturehub"}

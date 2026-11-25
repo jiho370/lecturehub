@@ -13,12 +13,26 @@ What it does, per lecture whose transcripts changed since the last reading:
 - adds a calendar candidate (never confirmed, D-052) with the quote and the AI's reasoning as Evidence, and an
   entry in ``_lecturehub/notices/inbox.json`` that the app shows as a banner and a Windows notification.
 
+Who reads it (D-073, 2026-11-24): ``engine()`` is ``google`` (Gemini text, the original path) or ``codex``
+(ChatGPT Edu through the user's own Codex CLI login, ``ai.codex.CodexEngine.run_json``: a read-only sandboxed
+``codex exec`` with an empty temp workspace, as the notes use it). Every edition starts on ``codex`` (D-075; the
+full edition started on ``google`` until 2026-11-25); the user changes it in settings. There is no fallback from one
+company to the other: with ``codex`` chosen and Codex missing or logged out nothing is sent and ``status.json`` says
+what is missing (the settings card, and once per state the app's banner: ``attention``).
+
 What one request carries besides the transcript (``build_prompt``, ``_context``): the course's folder name, the
 lecture's date, today's date, the course's timetable (weekday and times), and from 7 days before the lecture
 onward the calendar entries (kind, date, title, confirmed or candidate) and timetable exceptions (date, kind,
-note) of that course **and those that have no course at all**. A lecture is sent only when its course has the
-Gemini consent on record (the same provider and terms as the audio that produced the transcript); the entries
-without a course are not covered by any course's consent and go along all the same.
+note) of that course. On the Google path the entries **that have no course at all** go along too (unchanged since
+P-035), and a lecture is sent only when its course has the Gemini consent on record (``gemini_transcribe``, the
+same provider and terms as the audio that produced the transcript). On the Codex path a lecture is sent only when
+its course has the ``codex_notices`` consent (per course, stored only through the app's native dialog), and the
+entries without a course are left out: no course's consent covers them. Lectures of courses without that consent
+are not sent and are listed once per course in ``status.json`` (``needs_consent``) for the settings screen.
+
+Codex runs a local CLI process, so on that path nothing is started while a recording runs (AGENTS §2.7; ``busy``),
+a running request is cancelled when a recording starts or the app quits (``stop``), one at a time (the app's lock),
+windowless at low priority (``ai.process.execute``) and with a time limit (``CODEX_TIMEOUT_S``).
 
 How often (release review 2026-11-16): a lecture is sent when its transcripts changed. A send that failed is not
 repeated every round: one set of transcripts (fingerprint) is sent at most ``MAX_SENDS`` times, the next send
@@ -41,6 +55,10 @@ from lecturehub.core.ids import new_ulid
 from . import calendar_events
 
 PROVIDER = "gemini_transcribe"  # consent key: the course's audio already goes to Google under this notice
+CODEX_PROVIDER = "codex_notices"  # consent key of the Codex path, per course (never codex_note's consent)
+ENGINES = {"codex": "ChatGPT Edu (Codex)", "google": "Google Gemini"}
+PROVIDERS = {"google": PROVIDER, "codex": CODEX_PROVIDER}
+CODEX_TIMEOUT_S = 900     # one lecture; the Gemini reading took 3–5 minutes
 MODELS = ("gemini-flash-latest", "gemini-2.5-flash")
 DAYS_BACK = 28            # lectures older than this are not read again (their notices are mostly past)
 HORIZON_DAYS = 150
@@ -191,7 +209,92 @@ class FakeText:
         return self.answer(prompt) if callable(self.answer) else self.answer
 
 
-def default_client():
+class Stopped(NoticeError):
+    """The Codex request was cancelled on this PC (a recording started, or the app is closing). Not a failure of
+    the service: the lecture is not put on the waits of ``RETRY_AFTER_MS``, the next round reads it again."""
+
+
+def json_schema(schema: dict) -> dict:
+    """``SCHEMA`` (Gemini's OpenAPI subset: upper-case types, ``nullable``) as plain JSON Schema for Codex's
+    ``--output-schema`` (``ai.codex.strict_schema`` then closes every object)."""
+    out = {}
+    for key, value in schema.items():
+        if key == "nullable":
+            continue
+        if key == "type" and isinstance(value, str):
+            value = [value.lower(), "null"] if schema.get("nullable") else value.lower()
+        elif key == "properties":
+            value = {name: json_schema(child) for name, child in value.items()}
+        elif key == "items":
+            value = json_schema(value)
+        out[key] = value
+    return out
+
+
+class Halt:
+    """``is_set()`` for ``ai.process.execute``, asked every quarter second while Codex runs: the app is quitting
+    (``stop``), or a recording started (``busy``, asked at most every ``every`` seconds)."""
+
+    def __init__(self, stop=None, busy=None, every: float = 5.0):
+        self.stop, self.busy, self.every = stop, busy, every
+        self._checked, self._busy = float("-inf"), False
+
+    def is_set(self) -> bool:
+        if self.stop is not None and self.stop.is_set():
+            return True
+        if self.busy is None:
+            return False
+        now = time.monotonic()
+        if now - self._checked >= self.every:
+            self._checked = now
+            try:
+                self._busy = bool(self.busy())
+            except Exception:  # noqa: BLE001 - when the recorder's state cannot be read, stop to be safe
+                self._busy = True
+        return self._busy
+
+
+class CodexText:
+    """The Codex path: one ``codex exec`` per lecture through ``ai.codex.CodexEngine.run_json`` (read-only sandbox,
+    empty temp workspace, shell and other tools turned off, the user's ChatGPT login, no API key). ``posts`` is
+    raised before the CLI starts: once the prompt is on the CLI's stdin it may have gone out, so it is counted
+    whatever comes back; it is taken back only when the CLI could not be started at all."""
+
+    model = "codex_cli"
+
+    def __init__(self, engine=None, *, timeout: float = CODEX_TIMEOUT_S, halt: Halt | None = None):
+        if engine is None:
+            from lecturehub.ai.codex import CodexEngine
+
+            engine = CodexEngine()
+        self.engine, self.timeout, self.halt = engine, timeout, halt or Halt()
+        self.posts = 0
+
+    def generate_json(self, prompt: str, schema: dict, *, max_posts: int | None = None, may_send=None) -> dict:
+        import subprocess
+
+        self.posts += 1
+        try:
+            answer = self.engine.run_json(prompt, json_schema(schema), timeout=self.timeout, stop=self.halt)
+        except (FileNotFoundError, PermissionError) as exc:  # the CLI is not there: nothing left this PC
+            self.posts -= 1
+            raise NoticeError("Codex(ChatGPT)를 찾지 못했습니다. 설정 → 연결 → 프로그램에서 설치 안내를 확인하세요.") from exc
+        except (RuntimeError, OSError, subprocess.SubprocessError, ValueError) as exc:
+            if self.halt.is_set():
+                raise Stopped("녹음이 시작되었거나 앱을 닫아 Codex 요청을 멈췄습니다") from exc
+            raise NoticeError(str(exc)[:200] or "Codex 요청이 실패했습니다") from exc
+        if not isinstance(answer, dict):
+            raise UnusableAnswer("AI 응답이 JSON이 아닙니다")
+        return {key: value for key, value in answer.items() if key not in ("model", "usage", "cost_usd")}
+
+
+def default_client(name: str = "google", *, stop=None, busy=None):
+    if name == "codex":
+        if os.environ.get("LECTUREHUB_FAKE_GEMINI") or os.environ.get("LECTUREHUB_FAKE_CODEX"):
+            fake = FakeText()  # synthetic UI checks: never the real CLI with the owner's login
+            fake.model = "fake_codex"
+            return fake
+        return CodexText(halt=Halt(stop, busy))
     if os.environ.get("LECTUREHUB_FAKE_GEMINI"):
         return FakeText()
     from lecturehub.transcription.gemini import GeminiError, load_api_key
@@ -202,15 +305,32 @@ def default_client():
         raise NoticeError(str(exc)) from exc
 
 
+def codex_missing(*, check_login: bool = False) -> str | None:
+    """What keeps the Codex path from working now, in the user's words; None when nothing is known to be missing.
+    ``check_login`` asks ``codex login status`` (a short local process, no network of its own)."""
+    if os.environ.get("LECTUREHUB_FAKE_GEMINI") or os.environ.get("LECTUREHUB_FAKE_CODEX"):
+        return None
+    from lecturehub.ai.codex import CodexEngine
+    from lecturehub.core import tools
+
+    exe = CodexEngine().executable()
+    if not exe:
+        return ("Codex(ChatGPT)가 이 PC에 없습니다. 설정 → 연결 → 프로그램의 설치 안내대로 설치한 뒤 "
+                "명령 창에서 codex login으로 ChatGPT 계정에 로그인하세요.")
+    if check_login and tools.codex_signed_in(exe) is False:
+        return "Codex에 로그인되어 있지 않습니다. 명령 창에서 codex login으로 ChatGPT 계정에 로그인하세요."
+    return None
+
+
 # ------------------------------------------------------------------ files under _lecturehub/notices
-def enabled() -> bool:
+def enabled(*, saved: dict | None = None) -> bool:
     """The background reading can be switched off in settings (``class_notices: false``). A lecture is sent when
     its transcripts changed, for courses whose Google consent is on record, and at most ``MAX_SENDS`` times per
     change when sending fails; this switch is for people who do not want that extra use of their key at all.
     ``scan`` asks again before each lecture, so a round that is running stops sending when it is turned off."""
     from lecturehub.core import settings
 
-    return settings.get("class_notices", True) is not False
+    return (settings.get("class_notices", True) if saved is None else saved.get("class_notices", True)) is not False
 
 
 def set_enabled(on: bool) -> bool:
@@ -218,6 +338,84 @@ def set_enabled(on: bool) -> bool:
 
     settings.save({"class_notices": bool(on)})
     return enabled()
+
+
+def default_engine() -> str:
+    """ChatGPT (Codex) in every edition (D-075, owner 2026-11-25: "GPT를 기본으로, 전부"; the full edition started on
+    Google before). A saved ``class_notices_engine`` of ``google`` is still honoured, and nothing ever falls back
+    from one company to the other (D-073): with Codex missing or a course not allowed nothing is sent and
+    ``attention`` puts that in front of the user once."""
+    return "codex"
+
+
+ATTENTION_SEEN = "class_notices_attention_seen"  # settings.json: the state the user last marked as seen
+
+
+def attention(root: Path) -> dict:
+    """The banner line for a reading that is on with ChatGPT (Codex) chosen but cannot send everything: courses
+    with new transcripts lack the ``codex_notices`` consent, or Codex is missing or logged out (the last round's
+    ``status.json``). ``key`` names that state; ``show`` is false once the user marked this very state seen, so it
+    is said once per state and not every round. Nothing is decided or sent here."""
+    from lecturehub.core import settings
+
+    name, last = engine(), status(root)
+    if not enabled() or name != "codex" or last.get("engine") != name:
+        return {"show": False}
+    needs = sorted({c for c in last.get("needs_consent") or [] if isinstance(c, str) and c})
+    unavailable = last.get("unavailable")
+    unavailable = unavailable if isinstance(unavailable, str) and unavailable else None
+    if not needs and not unavailable:
+        return {"show": False}
+    state = json.dumps([name, needs, unavailable or ""], ensure_ascii=False)
+    key = hashlib.sha256(state.encode("utf-8")).hexdigest()[:16]
+    return {"show": settings.get(ATTENTION_SEEN) != key, "key": key, "needs_consent": needs, "unavailable": unavailable}
+
+
+def attention_seen(root: Path, key: str) -> bool:
+    """Mark the banner's state as seen (only the state shown now: an older key does not hide a newer state)."""
+    from lecturehub.core import settings
+
+    now = attention(root)
+    if not now.get("key") or now["key"] != str(key or ""):
+        return False
+    settings.save({ATTENTION_SEEN: now["key"]})
+    return True
+
+
+def engine(*, saved: dict | None = None) -> str:
+    """``codex`` or ``google``: settings.json ``class_notices_engine``, else the edition's default. A value that is
+    neither counts as not set. Kept apart from ``ai.engines`` (its choices have no ``google``)."""
+    from lecturehub.core import settings
+
+    value = settings.get("class_notices_engine") if saved is None else saved.get("class_notices_engine")
+    return value if isinstance(value, str) and value in ENGINES else default_engine()
+
+
+def set_engine(name: str) -> str:
+    from lecturehub.core import settings
+
+    if name not in ENGINES:
+        raise ValueError("수업 중 공지 찾기 엔진은 codex 또는 google 입니다.")
+    settings.save({"class_notices_engine": name})
+    return engine()
+
+
+def status(root: Path) -> dict:
+    """The last background round's word for the settings screen (``status.json``): the engine, what is missing
+    (Codex not installed or not logged in), the courses whose lectures wait for the ``codex_notices`` consent,
+    whether a recording held the round back. Empty when there was no round yet or the file is damaged."""
+    data = _read(_dir(root) / "status.json", {})
+    return data if isinstance(data, dict) else {}
+
+
+def _set_status(root: Path, value: dict) -> None:
+    """Written only when it changed (every 10 minutes otherwise). Never raises: it is a message, not a record."""
+    try:
+        old = status(root)
+        if {k: v for k, v in old.items() if k != "at"} != value:
+            _write(_dir(root) / "status.json", {**value, "at": _now_ms()})
+    except Exception:  # noqa: BLE001, S110 - a message only: the reading and its own records go on
+        pass
 
 
 def _number(value) -> int:
@@ -228,12 +426,13 @@ def _number(value) -> int:
         return 0
 
 
-def _count_use(root: Path, today: date, sends: int, characters: int) -> bool:
+def _count_use(root: Path, today: date, sends: int, characters: int, engine_name: str | None = None) -> bool:
     """How much this feature has sent, per day (``notices/usage.json``). ``readings`` is the number of requests
     whose body went out (the key name is older than that meaning) and ``characters`` the prompt characters of
     each of them added up. The app shows the month's total next to the switch, so the use of the key is not
     invisible (release review 2026-11-16). ``sends`` may be negative to take back a request that was put on
-    record before sending and then never left this PC.
+    record before sending and then never left this PC. ``engine_name`` (``google``/``codex``) also adds the same
+    numbers under ``by_engine`` (days written before 2026-11-24 have none: they were all Google).
 
     Never raises and never stops the reading: a file of the wrong shape counts as empty, a damaged day as zero,
     the other days are written back as they were. False when the count could not be written."""
@@ -244,8 +443,15 @@ def _count_use(root: Path, today: date, sends: int, characters: int) -> bool:
             data = {}
         day = data.get(today.isoformat())
         day = day if isinstance(day, dict) else {}
-        data[today.isoformat()] = {**day, "readings": max(0, _number(day.get("readings")) + int(sends)),
-                                   "characters": max(0, _number(day.get("characters")) + int(characters))}
+        entry = {**day, "readings": max(0, _number(day.get("readings")) + int(sends)),
+                 "characters": max(0, _number(day.get("characters")) + int(characters))}
+        if engine_name:
+            split = day.get("by_engine") if isinstance(day.get("by_engine"), dict) else {}
+            mine = split.get(engine_name) if isinstance(split.get(engine_name), dict) else {}
+            entry["by_engine"] = {**split, engine_name: {
+                "readings": max(0, _number(mine.get("readings")) + int(sends)),
+                "characters": max(0, _number(mine.get("characters")) + int(characters))}}
+        data[today.isoformat()] = entry
         _write(path, data)
         return True
     except Exception:  # noqa: BLE001 - whatever is wrong with the count, the reading and its own records go on
@@ -259,8 +465,13 @@ def usage(root: Path, today: date) -> dict:
     month = today.isoformat()[:7]
     days = [value for key, value in (data.items() if isinstance(data, dict) else []) if str(key).startswith(month)
             and isinstance(value, dict)]
+    split: dict[str, int] = {}
+    for day in days:
+        for name, part in (day.get("by_engine").items() if isinstance(day.get("by_engine"), dict) else []):
+            if name in ENGINES and isinstance(part, dict):
+                split[name] = split.get(name, 0) + _number(part.get("readings"))
     return {"month": month, "readings": sum(_number(d.get("readings")) for d in days),
-            "characters": sum(_number(d.get("characters")) for d in days)}
+            "characters": sum(_number(d.get("characters")) for d in days), "by_engine": split}
 
 
 def _dir(root: Path) -> Path:
@@ -334,17 +545,21 @@ def _lines(connection: sqlite3.Connection, transcripts: list[dict]) -> tuple[Lin
     return lines, "\n\n".join(blocks)
 
 
-def _context(connection: sqlite3.Connection, course_id: str, lecture_day: date) -> dict:
+def _context(connection: sqlite3.Connection, course_id: str, lecture_day: date, *, unassigned: bool = True) -> dict:
+    """The timetable of the course and its calendar entries and timetable exceptions from 7 days before the lecture.
+    ``unassigned``: also the entries that have no course (the Google path, as since P-035). The Codex path passes
+    False: its consent is per course (``codex_notices``) and covers nothing that belongs to no course."""
     slots = [f"{WEEKDAYS[w]} {s // 3_600_000:02d}:{s // 60_000 % 60:02d}–{e // 3_600_000:02d}:{e // 60_000 % 60:02d}"
              for w, s, e in connection.execute(
                  "SELECT weekday, start, end FROM Schedule WHERE course_id=? ORDER BY weekday, start", (course_id,))]
     since = (lecture_day - timedelta(days=7)).isoformat()
+    whose = "(course_id=? OR course_id IS NULL)" if unassigned else "course_id=?"
     known = [f"{r[1]} {calendar_events.KIND_LABEL.get(r[0], r[0])} — {r[2]} ({'확정' if r[3] == 'confirmed' else '후보'})"
              for r in connection.execute(
-                 "SELECT kind, date, title, status FROM CalendarEvent WHERE (course_id=? OR course_id IS NULL) "
+                 f"SELECT kind, date, title, status FROM CalendarEvent WHERE {whose} "
                  "AND status IN ('confirmed','candidate') AND date >= ? ORDER BY date", (course_id, since))]
     known += [f"{r[0]} {r[1]} — {r[2]} (일정 예외)" for r in connection.execute(
-        "SELECT date, kind, note FROM ScheduleException WHERE (course_id=? OR course_id IS NULL) AND date >= ? "
+        f"SELECT date, kind, note FROM ScheduleException WHERE {whose} AND date >= ? "
         "ORDER BY date", (course_id, since))]
     return {"slots": slots, "known": known}
 
@@ -557,8 +772,17 @@ def _save(path: Path, state: dict) -> bool:
 
 def scan(connection: sqlite3.Connection, root: Path, today: date, *, client=None, consent=None,
          lecture_ids: list[str] | None = None, force: bool = False, days_back: int = DAYS_BACK,
-         now_ms=None) -> dict:
+         now_ms=None, engine_name: str | None = None, busy=None, stop=None) -> dict:
     """Read lectures whose transcripts changed. Returns what was added for the banner.
+
+    ``engine_name``: ``google`` or ``codex`` (default ``engine()``). It picks the consent asked per course
+    (``PROVIDERS``), the context sent (``_context(unassigned=...)``) and, when ``client`` is None, the client.
+    On the Codex path (D-073): Codex missing or logged out → nothing is sent and the result has ``unavailable``
+    (also kept in ``status.json``); ``busy()`` true before a send → nothing is sent, the round ends with
+    ``recording``; ``busy`` and ``stop`` also cancel a running request (``Halt``), which ends the round with
+    ``stopped`` and leaves the lecture for the next round (counted in usage: its text may have gone out). Courses
+    without the ``codex_notices`` consent are listed once each in ``needs_consent``. No path falls back to the
+    other company.
 
     Each lecture's findings are committed (and inbox/state saved) before the next network call, so the
     SQLite write lock is never held while waiting for Gemini (review #1 — a recording's ``ingest-app``
@@ -586,9 +810,24 @@ def scan(connection: sqlite3.Connection, root: Path, today: date, *, client=None
 
     root = Path(root)
     clock = now_ms or _now_ms
+    name = engine_name or engine()
+    if name not in ENGINES:
+        raise ValueError("수업 중 공지 찾기 엔진은 codex 또는 google 입니다.")
+    provider = PROVIDERS[name]
     background = not force and not lecture_ids  # the rounds the switch in settings governs
     if background and not enabled():
-        return {"read": 0, "added": [], "skipped": [], "errors": [], "waiting": [], "disabled": True}
+        return {"read": 0, "added": [], "skipped": [], "errors": [], "waiting": [], "disabled": True,
+                "engine": name}
+    unavailable = None
+    if name == "codex" and client is None:
+        unavailable = codex_missing()
+        if unavailable:  # no fallback to Google: nothing is sent and the settings screen says what is missing
+            if background:
+                _set_status(root, {"engine": name, "unavailable": unavailable, "needs_consent": [],
+                                   "recording": False})
+            return {"read": 0, "added": [], "skipped": [], "errors": [], "waiting": [], "engine": name,
+                    "unavailable": unavailable}
+    login_checked = name != "codex" or client is not None
     state_path = _dir(root) / "state.json"
     state = _read(state_path, {})
     if not isinstance(state, dict):  # damaged: as if nothing had been read yet
@@ -598,7 +837,9 @@ def scan(connection: sqlite3.Connection, root: Path, today: date, *, client=None
 
         consent = ConsentStore(root / "_lecturehub" / "consent.json")
     added, read, skipped, errors, waiting = [], 0, [], [], []
-    stopped = dirty = False
+    needs: list[str] = []  # Codex path: courses with lectures waiting for the codex_notices consent, once each
+    stopped = dirty = recording = False
+    halted = None
     for lecture in lectures_to_read(connection, today, days_back, lecture_ids):
         transcripts = [t for t in lecture_index._transcripts(connection, lecture["id"]) if t["segments"]]
         if not transcripts:
@@ -607,8 +848,15 @@ def scan(connection: sqlite3.Connection, root: Path, today: date, *, client=None
         entry = _entry(state, lecture["id"])
         if not force and entry.get("fingerprint") == mark:
             continue
-        if not consent.granted(PROVIDER, lecture["course"]):
-            skipped.append({"lecture_id": lecture["id"], "reason": f"{lecture['course']}: Google 전송 동의 없음"})
+        if not consent.granted(provider, lecture["course"]):
+            who = "Google 전송 동의 없음" if name == "google" else "ChatGPT(Codex) 전송 허용 없음"
+            skipped.append({"lecture_id": lecture["id"], "course": lecture["course"],
+                            "reason": f"{lecture['course']}: {who}"})
+            if name == "codex" and lecture["course"] not in needs:
+                from lecturehub.transcription.consent import named
+
+                if named(lecture["course"]):
+                    needs.append(lecture["course"])
             continue
         sends, failed_at = _failed(entry, mark)
         if sends and not force:
@@ -625,11 +873,20 @@ def scan(connection: sqlite3.Connection, root: Path, today: date, *, client=None
         if background and not enabled():  # switched off while this round was running: nothing more goes out
             stopped = True
             break
+        if name == "codex" and busy is not None and busy():
+            recording = True  # a local CLI process is not started next to a recording (AGENTS §2.7)
+            break
+        if not login_checked:
+            login_checked = True
+            unavailable = codex_missing(check_login=True)
+            if unavailable:
+                break
         if client is None:
-            client = default_client()
+            client = default_client(name, stop=stop, busy=busy)
         lines, text = _lines(connection, transcripts)
-        prompt = build_prompt(lecture["course"], date.fromisoformat(lecture["date"]), today,
-                              _context(connection, lecture["course_id"], date.fromisoformat(lecture["date"])), text)
+        lecture_day = date.fromisoformat(lecture["date"])
+        context = _context(connection, lecture["course_id"], lecture_day, unassigned=name == "google")
+        prompt = build_prompt(lecture["course"], lecture_day, today, context, text)
         if connection.in_transaction:
             connection.commit()  # never wait on the network holding the write lock
         pending = {**entry, "failed": {"fingerprint": mark, "sends": sends + 1, "at": clock(), "error": PENDING}}
@@ -638,7 +895,7 @@ def scan(connection: sqlite3.Connection, root: Path, today: date, *, client=None
             errors.append({"lecture_id": lecture["id"],
                            "error": "읽은 기록을 저장할 수 없어 전사 글을 보내지 않았습니다"})
             break
-        counted = _count_use(root, today, 1, len(prompt))
+        counted = _count_use(root, today, 1, len(prompt), name)
         before, answer, failure = _posts(client), None, None
         try:
             answer = client.generate_json(prompt, SCHEMA, max_posts=None if force else MAX_SENDS - sends,
@@ -651,8 +908,16 @@ def scan(connection: sqlite3.Connection, root: Path, today: date, *, client=None
         posted = max(0, after - before) if before is not None and after is not None else 1
         extra = posted - (1 if counted else 0)
         if extra:
-            _count_use(root, today, extra, extra * len(prompt))
+            _count_use(root, today, extra, extra * len(prompt), name)
         now = clock()
+        if isinstance(failure, Stopped):  # cancelled on this PC: no wait, the next round reads it again
+            if entry:
+                state[lecture["id"]] = entry
+            else:
+                state.pop(lecture["id"], None)
+            _save(state_path, state)
+            halted = str(failure)
+            break
         if failure is not None:
             errors.append({"lecture_id": lecture["id"], "error": str(failure)})
             if posted:
@@ -695,7 +960,21 @@ def scan(connection: sqlite3.Connection, root: Path, today: date, *, client=None
             connection.commit()  # short write transaction per lecture
     if dirty:
         _save(state_path, state)
-    result = {"read": read, "added": added, "skipped": skipped, "errors": errors, "waiting": waiting}
+    result = {"read": read, "added": added, "skipped": skipped, "errors": errors, "waiting": waiting,
+              "engine": name}
     if stopped:
         result["disabled"] = True
+    if name == "codex":
+        result["needs_consent"] = needs
+        if recording:
+            result["recording"] = True
+        if halted:
+            result["stopped"] = halted
+        if unavailable:
+            result["unavailable"] = unavailable
+        if background:
+            _set_status(root, {"engine": name, "unavailable": unavailable, "needs_consent": needs,
+                               "recording": recording})
+    elif background:
+        _set_status(root, {"engine": name, "unavailable": None, "needs_consent": [], "recording": False})
     return result

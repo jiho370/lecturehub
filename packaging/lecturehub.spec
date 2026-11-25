@@ -1,4 +1,4 @@
-# PyInstaller spec: one folder with LectureHub.exe (window) and LectureHubWorker.exe (background jobs).
+# PyInstaller spec: LectureHub.exe (window), LectureHubStartup.exe (login), LectureHubWorker.exe (background jobs).
 # Built by tools/build_app.py from the PUBLIC export (its src comes first on the path: SRC env var).
 import os
 from pathlib import Path
@@ -84,9 +84,13 @@ def version_file(name, description):
 app = analysis("launcher_app.py")
 worker = analysis("launcher_worker.py")
 
-app_exe = EXE(PYZ(app.pure), app.scripts, [], exclude_binaries=True, name="LectureHub", console=False, icon=ICON,
+app_pyz = PYZ(app.pure)
+app_exe = EXE(app_pyz, app.scripts, [], exclude_binaries=True, name="LectureHub", console=False, icon=ICON,
               version=version_file("LectureHub", "Lecture Hub"))
+# Same launcher/import graph, no extra Application/alias: the MSIX startupTask starts this hidden by its name.
+startup_exe = EXE(app_pyz, app.scripts, [], exclude_binaries=True, name="LectureHubStartup", console=False, icon=ICON,
+                  version=version_file("LectureHubStartup", "Lecture Hub login launcher"))
 worker_exe = EXE(PYZ(worker.pure), worker.scripts, [], exclude_binaries=True, name="LectureHubWorker",
                  console=True, icon=ICON, version=version_file("LectureHubWorker", "Lecture Hub background helper"))
 
-COLLECT(app_exe, app.binaries, app.datas, worker_exe, worker.binaries, worker.datas, name="LectureHub")
+COLLECT(app_exe, startup_exe, app.binaries, app.datas, worker_exe, worker.binaries, worker.datas, name="LectureHub")

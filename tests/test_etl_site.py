@@ -111,8 +111,17 @@ def test_other_schools_course_names_find_the_timetable_subject():
     subjects = {"도시계획론": "도시계획", "합성역학": "역학", "합성역학실험": "역학실험"}
     assert etl_sync.match_subject("도시계획론", subjects) == "도시계획"
     assert etl_sync.match_subject("[2026-2] 도시 계획론-01", subjects) == "도시계획"
-    assert etl_sync.match_subject("합성역학실험 (Mechanics Lab)", subjects) == "역학실험"  # the longest subject wins
+    assert etl_sync.match_subject("합성역학실험 (Mechanics Lab)", subjects) == "역학실험"  # the same name without (…)
     assert etl_sync.match_subject("Calculus", subjects) is None
+
+
+def test_another_schools_course_must_be_the_subject_not_contain_it():
+    """Integration review (finding 4): "응용통계학" landed in the folder of "통계" (and its notices with it), and a
+    name that fits two subjects took one of them."""
+    assert etl_sync.match_subject("응용통계학", {"통계": "통계"}) is None
+    assert etl_sync.match_subject("합성역학실험", {"합성역학": "역학"}) is None
+    assert etl_sync.match_subject("[2026-2] 도시계획론-02", {"도시 계획론": "가", "도시계획론 ": "나"}) is None
+    assert etl_sync.match_subject("[2026-2] 통계-01", {"통계": "통계", "응용통계학": "응용"}) == "통계"
 
 
 def test_assignments_from_another_school(tmp_path):
@@ -124,7 +133,7 @@ def test_assignments_from_another_school(tmp_path):
     pages = {
         f"{site}/api/v1/courses?enrollment_state=active&per_page=100": [{"id": 7, "name": "[26-2] 도시계획론 01분반"},
                                                                          {"id": 8, "name": "Chemistry"}],
-        f"{site}/api/v1/courses/7/assignments?per_page=100&order_by=due_at": [
+        f"{site}/api/v1/courses/7/assignments?per_page=100&order_by=due_at&include[]=submission": [  # D-077
             {"id": 1, "name": "과제 1", "due_at": "2026-11-30T14:59:00Z", "html_url": f"{site}/courses/7/assignments/1"}],
     }
     found = etl_sync.fetch_assignments(root, "t", fetch=lambda url, token: (pages[url], None))

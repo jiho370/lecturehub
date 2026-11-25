@@ -6,7 +6,7 @@ import json
 import re
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -194,7 +194,7 @@ def _semester_root(connection: sqlite3.Connection) -> Path | None:
     return path.parent.parent if path and path.parent.name == "_lecturehub" else None
 
 
-def _day(connection: sqlite3.Connection, day: date) -> tuple[list[ScheduledClass], list[str]]:
+def _day(connection: sqlite3.Connection, day: date, *, include_cancelled: bool = False) -> tuple[list[ScheduledClass], list[str]]:
     rows = connection.execute(
         "SELECT c.id, c.folder_name, s.start, s.end FROM Schedule s "
         "JOIN Course c ON c.id = s.course_id WHERE s.weekday = ? ORDER BY s.start, c.folder_name",
@@ -219,15 +219,28 @@ def _day(connection: sqlite3.Connection, day: date) -> tuple[list[ScheduledClass
     # that day's regular class. Only a whole-day date counts: "10월 중순" (approx) never removes a class.
     closed = _calendar_closures(connection, day)
     warnings += [f"{day.isoformat()} {course or '전체 과목'} 휴강: 달력에서 확정" for _cid, course in closed]
+    cancelled = []
+
+    def cancel(items, note):
+        if include_cancelled:
+            cancelled.extend(replace(item, kind="휴강", note=note) for item in items)
+
     if any(cid is None for cid, _course in closed):
-        return [], warnings
+        cancel(classes, "달력에서 확정")
+        return cancelled, warnings
+    cancel([item for item in classes if item.course_id in {cid for cid, _course in closed}], "달력에서 확정")
     classes = [item for item in classes if item.course_id not in {cid for cid, _course in closed}]
     # An explicitly registered all-course closure takes precedence over every
     # regular or make-up class on that day, regardless of insertion order.
     if any(course_id is None and kind == "휴강" for course_id, _course, kind, _note in exceptions):
-        return [], warnings
+        cancel(classes, next(note for cid, _, kind, note in exceptions if cid is None and kind == "휴강"))
+        return cancelled, warnings
     # Removing the regular occurrences first makes a cancellation plus an
     # explicit make-up session deterministic, independent of insertion order.
+    for item in classes:
+        closure = next((note for cid, _, kind, note in exceptions if cid == item.course_id and kind == "휴강"), None)
+        if closure is not None:
+            cancel([item], closure)
     for course_id, _course, kind, _note in exceptions:
         if kind in {"휴강", "대체", "시간변경"}:
             classes = [item for item in classes if course_id is not None and item.course_id != course_id]
@@ -245,17 +258,19 @@ def _day(connection: sqlite3.Connection, day: date) -> tuple[list[ScheduledClass
             continue
         classes.append(ScheduledClass(course_id, course, day.isoformat(), *times, kind=kind, note=note))
     unique = {(item.course_id, item.start_ms, item.end_ms): item for item in classes}
-    return sorted(unique.values(), key=lambda item: (item.start_ms, item.course, item.course_id)), warnings
+    return sorted([*unique.values(), *cancelled], key=lambda item: (item.start_ms, item.course, item.course_id)), warnings
 
 
-def daily_schedule(connection: sqlite3.Connection, day: date) -> list[ScheduledClass]:
+def daily_schedule(connection: sqlite3.Connection, day: date, *, include_cancelled: bool = False) -> list[ScheduledClass]:
     """Return that date's class occurrences after all registered exceptions.
 
     Weekdays use Python's Monday=0 convention, and clock times are milliseconds
     after midnight. Explicit HH:MM-HH:MM ranges in exception notes supply
     make-up/replacement times. Recurrence is never inferred from free prose.
+    The optional timetable picture keeps cancelled regular slots labelled 휴강;
+    recording and reminder callers continue to receive only actual classes.
     """
-    return _day(connection, day)[0]
+    return _day(connection, day, include_cancelled=include_cancelled)[0]
 
 
 def today(connection: sqlite3.Connection, now: datetime, *, horizon_days: int = 7) -> TodaySchedule:

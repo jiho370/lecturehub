@@ -106,6 +106,13 @@ def put(path, text):
     path.write_text(text, encoding="utf-8")
 
 
+@pytest.fixture(autouse=True)
+def google_engine(monkeypatch):
+    """These tests are about the Google path (P-035). The public edition starts on Codex (D-073), so the default
+    is pinned here; tests/test_class_notices_codex.py covers the Codex path and the defaults per edition."""
+    monkeypatch.setattr(cn, "default_engine", lambda: "google")
+
+
 @pytest.fixture
 def library(tmp_path):
     with closing(db.connect(tmp_path / "lecturehub.sqlite")) as connection:
@@ -280,7 +287,8 @@ def test_background_reading_can_be_switched_off_and_its_use_is_counted(library, 
     assert asked["read"] == 1
     cn.set_enabled(True)
     use = cn.usage(tmp_path, today)
-    assert use == {"month": "2026-10", "readings": 1, "characters": use["characters"]} and use["characters"] > 100
+    assert use == {"month": "2026-10", "readings": 1, "characters": use["characters"],
+                   "by_engine": {"google": 1}} and use["characters"] > 100
     assert cn.usage(tmp_path, date(2026, 11, 1))["readings"] == 0  # a new month starts at zero
 
 
@@ -315,14 +323,16 @@ def test_NOTICE_USE_001_a_request_that_went_out_is_counted_whatever_came_back(li
     make, posts = gemini([reply])
     result = cn.scan(library, tmp_path, TODAY, client=make(), consent=Consent(), now_ms=Clock())
     assert len(posts) == 1 and result["read"] == 0 and len(result["errors"]) == 1
-    assert cn.usage(tmp_path, TODAY) == {"month": "2026-10", "readings": 1, "characters": len(posts[0]["prompt"])}
+    assert cn.usage(tmp_path, TODAY) == {"month": "2026-10", "readings": 1, "characters": len(posts[0]["prompt"]),
+                                         "by_engine": {"google": 1}}
 
 
 def test_NOTICE_USE_002_each_model_of_a_fall_through_is_counted(library, tmp_path):
     make, posts = gemini([BUSY, GOOD])
     result = cn.scan(library, tmp_path, TODAY, client=make(), consent=Consent(), now_ms=Clock())
     assert [p["model"] for p in posts] == list(cn.MODELS) and result["read"] == 1
-    assert cn.usage(tmp_path, TODAY) == {"month": "2026-10", "readings": 2, "characters": 2 * len(posts[0]["prompt"])}
+    assert cn.usage(tmp_path, TODAY) == {"month": "2026-10", "readings": 2, "characters": 2 * len(posts[0]["prompt"]),
+                                         "by_engine": {"google": 2}}
     assert json.loads(notice_file(tmp_path, "state.json").read_text(encoding="utf-8"))["l16"]["sends"] == 2
 
 
@@ -481,7 +491,7 @@ def test_NOTICE_STATE_005_a_state_file_that_fails_after_the_answer_keeps_candida
         real(path, data)
 
     monkeypatch.setattr(cn, "_write", write)
-    monkeypatch.setattr(cn, "default_client", lambda: cn.FakeText(closure_answer()))
+    monkeypatch.setattr(cn, "default_client", lambda *a, **k: cn.FakeText(closure_answer()))
     monkeypatch.setattr("lecturehub.transcription.consent.ConsentStore", lambda path: Consent())
     result = Library(tmp_path).notices_scan(TODAY)
     assert result["ok"] is True and result["read"] == 1 and len(result["added"]) == 1
@@ -516,7 +526,7 @@ def test_NOTICE_USE_004_a_damaged_usage_file_keeps_the_switch_and_goes_on_counti
     usage_file = notice_file(tmp_path, "usage.json")
     put(usage_file, '{"2026-10-01": {"readings": "x", "characters": [1]}, "2026-10-02": {"readings": 2, "characters": 50},'
                     ' "2026-10-03": "text", "2026-10-20": 7}')
-    assert cn.usage(tmp_path, TODAY) == {"month": "2026-10", "readings": 2, "characters": 50}
+    assert cn.usage(tmp_path, TODAY) == {"month": "2026-10", "readings": 2, "characters": 50, "by_engine": {}}
     setting = Library(tmp_path).notices_setting(TODAY)
     assert setting["ok"] is True and setting["on"] is True and setting["readings"] == 2  # the switch is still drawn
     cn.scan(library, tmp_path, TODAY, client=cn.FakeText(closure_answer()), consent=Consent())
@@ -533,7 +543,8 @@ def test_NOTICE_USE_005_the_switch_is_drawn_even_when_the_count_cannot_be_read(t
 
     monkeypatch.setattr(cn, "usage", lambda root, today: (_ for _ in ()).throw(ValueError("synthetic")))
     setting = Library(tmp_path).notices_setting(TODAY, set_to=False)
-    assert setting == {"ok": True, "on": False, "month": "2026-10", "readings": 0, "characters": 0}
+    assert {k: setting[k] for k in ("ok", "on", "month", "readings", "characters")} == {
+        "ok": True, "on": False, "month": "2026-10", "readings": 0, "characters": 0}
 
 
 def test_NOTICE_SWITCH_002_with_the_switch_off_the_word_rules_on_this_pc_still_run(tmp_path, monkeypatch):

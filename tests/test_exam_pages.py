@@ -164,11 +164,11 @@ def test_EXP_008_api_adds_links_to_the_exam_board_and_delegates(root, monkeypatc
 
 def test_EXP_009_exam_screen_links_pages_and_has_no_practice_screen():
     app = (WEB / "app.js").read_text(encoding="utf-8")
-    body = app[app.index("function openExam("):app.index("async function prepareAssignment(")]
+    body = app[app.index("function openExam("):app.index("function openCalendar(")]
     for gone in ("quiz_items", "quiz_answer", "data-quiz", "문제 풀기", "renderQuiz"):
         assert gone not in body, gone
     for kept in ("exam_page_open", "exam_page_add", "exam_page_remove", "exam_page_pick", "시험 페이지",
-                 "대비 자료", "수업 중 발언", "openLecture", "LHGerman.mountExam"):
+                 "대비 자료", "수업 중 발언", "openLecture"):
         assert kept in body, kept
     assert body.index("시험 일정") < body.index("pagesSection(c)") < body.index("대비 자료")
     css = (WEB / "app.css").read_text(encoding="utf-8")

@@ -77,6 +77,7 @@ class IndexReport:
     courses: int = 0
     schedules: int = 0
     material_matches: int = 0
+    auto_dismissed: int = 0  # HOLD-006: held items the app's first pass took out (shown with 되돌리기)
 
     @property
     def recording_match_rate(self) -> float | None:
@@ -1085,6 +1086,9 @@ def _run_index(root, connection, ffprobe, only_paths=None):
         except (OSError, ValueError) as exc:
             _held(connection, report, source, f"source read failed ({type(exc).__name__})")
     _confirmed_absences(connection, report, courses, sources, rows, match_text, year, lecture_ids)
+    from .holds import triage  # HOLD-006: settle what a rule can, leave the rest for the user
+
+    report.auto_dismissed = len(triage(connection, root)["dismissed"])
     return report
 
 

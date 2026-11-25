@@ -211,7 +211,200 @@ def questions(connection: sqlite3.Connection, *, now_ms: int | None = None, year
         card["items"].append({"id": item_id, "path": raw_path, "name": path.name})
         if raw_path in answers:
             card["answered"] = answers[raw_path]
-    return {"cards": list(cards.values()), "deferred": deferred}
+        if "recommend" not in card:
+            card["recommend"] = recommend(connection, card, path)
+    return {"cards": list(cards.values()), "deferred": deferred, "auto": auto_dismissed(connection)}
+
+
+# ---------- HOLD-006: the app's first pass (user request 2026-11-22: "정리할 수 있는 건 먼저 정리하고 진짜 내 판단이
+# 필요한 것만 남겨 줘"). Only cases a fixed rule can settle are taken out of the list, each with its reason; they are
+# shown in the 확인 panel under "앱이 먼저 정리한 것" with 되돌리기. Linking a file to a lecture is never done here —
+# that is still the user's answer; the card only carries a recommendation with its grounds.
+AUTO_WHY = {
+    "already_linked": "같은 파일이 이미 회차에 연결돼 있습니다 — 연결은 그대로 둡니다",
+    "changed_linked": "이미 연결된 파일의 내용이 바뀐 것입니다 — 연결은 그대로 둡니다",
+    "copy_linked": "내용이 똑같은 다른 파일이 이미 같은 수업에 연결돼 있습니다",
+    "course_wide_note": "날짜·회차가 없는 과목 전체 자료(시험 대비·요약 등)라 한 회차에 붙이지 않습니다",
+    "unreadable_extra": "시각 표시가 없어 앱이 읽을 수 없는 전사본이고, 그 수업에는 읽히는 전사본이 이미 있습니다",
+}
+_SAME = {"same audio hash has a different lecture identity", "same transcript hash has a different lecture identity",
+         "same note hash has different lecture links"}
+_CHANGED = {"registered source bytes changed; original record preserved",
+            "registered transcript bytes changed; original record preserved",
+            "registered note bytes changed; version review required",
+            "registered material bytes changed; source review required"}
+_SESSION_MARK = re.compile(r"(?<!\d)\d{1,2}[._/]\d{1,2}(?!\d)|(?<!\d)(0[1-9]|1[0-2])[0-3]\d(?!\d)|\d+\s*(강|주차|회차|교시)")
+_STAMP = re.compile(r"(?m)(^|\s)\d{1,2}:\d{2}(:\d{2})?\s*$")
+_WEEKDAYS = "월화수목금토일"
+
+
+def _linked_here(connection: sqlite3.Connection, raw_path: str, kind: str, root: Path | None) -> bool:
+    """The very same path is already registered and linked (media/transcript to a lecture, note to lectures, material)."""
+    names = {raw_path}
+    if root is not None:
+        try:
+            names.add(str(Path(raw_path).relative_to(root)))
+        except ValueError:
+            pass
+    marks = ",".join("?" * len(names))
+    query = {"media": f"SELECT 1 FROM MediaAsset WHERE path IN ({marks}) AND lecture_id IS NOT NULL",
+             "transcript": f"SELECT 1 FROM Transcript WHERE source_file IN ({marks}) AND lecture_id IS NOT NULL",
+             "note": f"SELECT 1 FROM StudyArtifact WHERE path IN ({marks}) AND lecture_ids IS NOT NULL "
+                     "AND lecture_ids NOT IN ('', '[]')",
+             "material": f"SELECT 1 FROM Material WHERE path IN ({marks})"}.get(kind)
+    return bool(query and connection.execute(query, tuple(names)).fetchone())
+
+
+def _copy_linked(connection: sqlite3.Connection, path: Path, info: dict, folders: list[str]) -> bool:
+    """Another file with the same bytes is linked to the lecture this file's own name points at (a plain copy)."""
+    digest, kind = info.get("sha256"), info.get("kind")
+    if not digest:
+        return False
+    if kind == "note":
+        for other, links in connection.execute(
+                "SELECT path, lecture_ids FROM StudyArtifact WHERE path != ? AND lecture_ids NOT IN ('', '[]')",
+                (str(path),)):
+            if Path(other).name == path.name and Path(other).is_file():
+                try:
+                    import hashlib
+
+                    if hashlib.sha256(Path(other).read_bytes()).hexdigest() == digest:
+                        return True
+                except OSError:
+                    continue
+        return False
+    guess = _guesses(path, folders, 2026)
+    if not (guess["course"] and guess["date"]):
+        return False
+    table = {"media": "MediaAsset", "transcript": "Transcript"}.get(kind)
+    if table is None:
+        return False
+    return bool(connection.execute(
+        f"SELECT 1 FROM {table} x JOIN Lecture l ON l.id = x.lecture_id JOIN Course c ON c.id = l.course_id "  # fixed name
+        "WHERE x.sha256 = ? AND c.folder_name = ? AND l.date = ?", (digest, guess["course"], guess["date"])).fetchone())
+
+
+def _unreadable_extra(connection: sqlite3.Connection, path: Path, reason: str, folders: list[str]) -> bool:
+    if reason != "transcript engine is unknown" and not _FORMAT_MISMATCH.match(reason or ""):
+        return False
+    guess = _guesses(path, folders, 2026)
+    if not (guess["course"] and guess["date"]) or not path.is_file():
+        return False
+    try:
+        from lecturehub.core.textio import decode_text
+
+        text = decode_text(path.read_bytes(), source=path)
+    except (OSError, ValueError):
+        return False
+    if _STAMP.search(text):
+        return False  # it has times: another format may read it, so the user picks
+    have = connection.execute(
+        "SELECT count(*) FROM Transcript t JOIN Lecture l ON l.id = t.lecture_id JOIN Course c ON c.id = l.course_id "
+        "WHERE c.folder_name = ? AND l.date = ?", (guess["course"], guess["date"])).fetchone()[0]
+    return have >= 2
+
+
+def auto_rule(connection: sqlite3.Connection, raw_path: str, info: dict, folders: list[str],
+              root: Path | None = None) -> str | None:
+    """Which first-pass rule settles this held item, or None (the user decides)."""
+    path, reason, kind = Path(raw_path), info.get("reason", ""), info.get("kind", "")
+    if reason in _SAME and _linked_here(connection, raw_path, kind, root):
+        return "already_linked"
+    if reason in _CHANGED and _linked_here(connection, raw_path, kind, root):
+        return "changed_linked"
+    if (reason in _SAME or reason == "filename course/date/session is unconfirmed") and _copy_linked(
+            connection, path, info, folders):
+        return "copy_linked"
+    if reason == "note lecture is unconfirmed" and not _SESSION_MARK.search(path.stem):
+        return "course_wide_note"
+    if kind == "transcript" and _unreadable_extra(connection, path, reason, folders):
+        return "unreadable_extra"
+    return None
+
+
+def triage(connection: sqlite3.Connection, root: Path | None = None) -> dict:
+    """Take out of the list what a rule settles (state ``rejected`` + Evidence ``app_dismissed`` with the rule, source
+    ``heuristic``). An item the user once took back from the app (``user_answer_revoked``) is left for the user."""
+    folders = _course_folders(connection)
+    taken = []
+    for item_id, raw_path, suggestion in connection.execute(
+            "SELECT id, source_path, suggestion FROM IngestItem WHERE state = 'held' ORDER BY source_path").fetchall():
+        if connection.execute("SELECT 1 FROM Evidence WHERE subject_type='IngestItem' AND subject_id=? "
+                              "AND kind='user_answer_revoked'", (item_id,)).fetchone():
+            continue
+        info = json.loads(suggestion)
+        rule = auto_rule(connection, raw_path, info, folders, root)
+        if rule is None:
+            continue
+        connection.execute(
+            "INSERT INTO Evidence (id, subject_type, subject_id, field, kind, detail, weight, source, created_at) "
+            "VALUES (?, 'IngestItem', ?, NULL, 'app_dismissed', ?, NULL, 'heuristic', ?)",
+            (new_ulid(), item_id, json.dumps({"rule": rule, "reason": info.get("reason", ""), "decided_by": "app_rule"},
+                                             ensure_ascii=False), time.time_ns() // 1_000_000))
+        connection.execute("UPDATE IngestItem SET state = 'rejected' WHERE id = ?", (item_id,))
+        append(connection, "HOLD_AUTO_DISMISSED", "IngestItem", item_id, {"rule": rule})
+        taken.append({"id": item_id, "rule": rule})
+    return {"dismissed": taken}
+
+
+def auto_dismissed(connection: sqlite3.Connection) -> list[dict]:
+    """Items the first pass took out and the user has not taken back, newest first — for the 확인 panel."""
+    out = []
+    for item_id, raw_path in connection.execute(
+            "SELECT id, source_path FROM IngestItem WHERE state = 'rejected'"):
+        last = connection.execute(
+            "SELECT kind, detail, created_at FROM Evidence WHERE subject_type='IngestItem' AND subject_id=? AND kind IN "
+            "('app_dismissed', 'not_study_material', 'user_answer_revoked') ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (item_id,)).fetchone()
+        if last and last[0] == "app_dismissed":
+            rule = json.loads(last[1]).get("rule", "")
+            out.append({"id": item_id, "path": raw_path, "name": Path(raw_path).name, "rule": rule,
+                        "why": AUTO_WHY.get(rule, rule), "at": last[2]})
+    return sorted(out, key=lambda x: (-x["at"], x["name"]))
+
+
+def _schedule_days(connection: sqlite3.Connection, folder: str | None) -> set[int]:
+    if not folder:
+        return set()
+    return {r[0] for r in connection.execute(
+        "SELECT s.weekday FROM Schedule s JOIN Course c ON c.id = s.course_id WHERE c.folder_name = ?", (folder,))}
+
+
+def recommend(connection: sqlite3.Connection, card: dict, path: Path) -> dict | None:
+    """A recommendation with its grounds for a date/identity card (shown first; the user still answers)."""
+    course = card["guesses"].get("course")
+    days = _schedule_days(connection, course)
+    if not days:
+        return None
+    if card["question"] == "date":
+        fits = [o for o in card["options"] if date.fromisoformat(o["value"]["date"]).weekday() in days]
+        header = next((o for o in fits if o["label"].endswith("(머리말)")), None)
+        if len(card["options"]) < 2 or not fits:
+            return None
+        pick = fits[0] if len(fits) == 1 else header
+        if pick is None:
+            return None
+        day = date.fromisoformat(pick["value"]["date"])
+        weekdays = "".join(_WEEKDAYS[d] for d in sorted(days))
+        why = (f"{course} 수업 요일({weekdays})에 맞는 날짜는 {day.month}/{day.day}({_WEEKDAYS[day.weekday()]})뿐입니다"
+               if len(fits) == 1 else
+               f"두 날짜 모두 {course} 수업 요일({weekdays})이라, 녹음 앱이 적어 둔 머리말 날짜 "
+               f"{day.month}/{day.day}({_WEEKDAYS[day.weekday()]})를 추천합니다")
+        return {"date": day.isoformat(), "value": pick["value"], "why": why}
+    if card["question"] == "identity":
+        match = re.search(r"(\d{1,2})\s*주차.{0,8}?([월화수목금토일])요일", path.stem)
+        first = connection.execute("SELECT min(date) FROM Lecture").fetchone()[0]
+        if not match or not first:
+            return None
+        weekday = _WEEKDAYS.index(match[2])
+        if weekday not in days:
+            return None
+        start = date.fromisoformat(first)
+        day = start - timedelta(days=start.weekday()) + timedelta(weeks=int(match[1]) - 1, days=weekday)
+        return {"date": day.isoformat(), "value": {"folder": course, "date": day.isoformat(), "session": ""},
+                "why": f"'{match[1]}주차 {match[2]}요일' — 첫 수업({start.month}/{start.day})이 있는 주를 1주차로 세면 "
+                       f"{day.month}/{day.day}이고, {course} 시간표에 {match[2]}요일 수업이 있습니다"}
+    return None
 
 
 def open_count(connection: sqlite3.Connection, now_ms: int | None = None) -> int:

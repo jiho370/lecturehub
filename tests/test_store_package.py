@@ -70,9 +70,39 @@ def test_manifest_is_valid_xml_with_the_identity_alias_and_capabilities():
     alias_exes = [e.get("Executable") for e in apps[0].iter(f"{{{NS['uap3']}}}Extension")
                   if e.get("Category") == "windows.appExecutionAlias"]
     assert alias_exes == ["LectureHubWorker.exe"]
+    # STARTUP-007 (D-084): opt-in, same Application, no unsupported Parameters on Windows 10 1809.
+    startups = [e for e in apps[0].iter(f"{{{NS['desktop']}}}Extension")
+                if e.get("Category") == "windows.startupTask"]
+    assert len(startups) == 1 and startups[0].get("Executable") == "LectureHubStartup.exe"
+    assert startups[0].get("EntryPoint") == "Windows.FullTrustApplication"
+    task = startups[0].find("desktop:StartupTask", NS)
+    assert task.attrib == {"TaskId": "LectureHubStartup", "Enabled": "false", "DisplayName": "Lecture Hub"}
     assert tree.find("m:Capabilities/rescap:Capability", NS).get("Name") == "runFullTrust"
     assert tree.find("m:Capabilities/m:DeviceCapability", NS).get("Name") == "microphone"
     assert "${" not in text
+
+
+def test_STARTUP_008_startup_launcher_is_bundled_and_selfchecked_in_the_installed_package():
+    spec = (ROOT / "packaging/lecturehub.spec").read_text(encoding="utf-8")
+    assert 'name="LectureHubStartup", console=False' in spec
+    assert 'startup_exe = EXE(app_pyz, app.scripts' in spec
+    assert "COLLECT(app_exe, startup_exe," in spec
+    build = (ROOT / "tools/build_msix.py").read_text(encoding="utf-8")
+    assert '"LectureHubStartup.exe"' in build
+    workflow = (ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8")
+    assert r'\LectureHubStartup.exe" -Args "--smoke' in workflow
+    assert "selfcheck-msix-startup.json" in workflow
+
+
+def test_STARTUP_009_uninstaller_only_removes_the_current_installs_optin_run_value():
+    from lecturehub.core.startup import RUN_KEY
+
+    script = (ROOT / "packaging/installer.iss").read_text(encoding="utf-8")
+    assert "AppMutex=LectureHub.AppRunning" in script and "CloseApplications=no" in script
+    cleanup = script[script.index("procedure CurUninstallStepChanged"):]
+    assert "CurUninstallStep = usUninstall" in cleanup and "CompareText(StartupCommand" in cleanup
+    assert "{app}\\LectureHub.exe" in cleanup and "--background" in cleanup
+    assert f"RegDeleteValue(HKCU, '{RUN_KEY}', 'LectureHub')" in cleanup
 
 
 def test_tiles_have_the_sizes_the_manifest_names(tmp_path):

@@ -24,6 +24,10 @@ from lecturehub.core.textio import read_text_any
 from lecturehub.recorder.service import BOOKMARK_FILE, DISCARD_FILE, LIVE, PAUSE_FILE, STOP_FILE
 
 WEEKDAYS = "월화수목금토일"
+# class notices through Codex (D-073): = index.class_notices.CODEX_PROVIDER, not imported (this module stays
+# clear of index/ and the database, D-050)
+NOTICES_PROVIDER = "codex_notices"
+ETL_NOTICES_PROVIDER = "codex_etl_notices"  # eTL announcements through Codex (D-077) = index.etl_notices.PROVIDER
 CLASS_OVER_GRACE_MIN = 5      # "수업이 끝난 것 같아요": timetable end + 5 minutes…
 CLASS_OVER_QUIET_MIN = 5      # …or this long with almost no sound
 CLASS_OVER_SNOOZE_MIN = 10
@@ -190,7 +194,7 @@ def _mai_uploader() -> str:
     """Who uploads MAI chunks: the app through Aside (default when the CLI is there), a Claude window, or the user.
 
     Remembered for two minutes: each answer costs two PATH scans (~60 ms) and init/engines ask on every call."""
-    from lecturehub.booking import aside_cli
+    from lecturehub.core import aside_cli
 
     key = (aside_cli.find_aside, *(os.environ.get(name, "") for name in (
         "LECTUREHUB_MAI_BROWSER", "LECTUREHUB_ASIDE_EXE", "LECTUREHUB_CLAUDE_EXE", "PATH", "PYTEST_CURRENT_TEST")))
@@ -338,6 +342,11 @@ class Backend:
 
         self.root = timetable.parent if timetable else data_root()
         self.needs_setup = self.root is None
+        self.setup_root = None  # D-086: the folder the first-run wizard already made (before its timetable step)
+        from lecturehub.core import settings as _settings
+
+        if self.root is not None and isinstance(_settings.get("setup_open"), dict):
+            self.setup_root, self.needs_setup = data_root() or self.root, True  # the wizard was left half-way
         if self.needs_setup:  # inert, app-private folder until the first-run setup picks a real one
             self.root = parking_root()
             self.config_error = self.config_error or NEEDS_SETUP
@@ -493,11 +502,11 @@ class Backend:
         except Exception:  # noqa: BLE001 - the window still opens without it
             return {}
 
-    # 그스룸 saved companions and room order: the full (owner's) build only; the public build types companions per booking
+    # Saved companions and room order: the full build only.
     def _gsr_prefs_off(self) -> dict | None:
         from lecturehub.core import edition
 
-        return None if edition.has("gsr_prefs") else {"ok": False, "error": "공개판에는 없는 기능입니다"}
+        return None if edition.has("gsr") and edition.has("gsr_prefs") else {"ok": False, "state": "disabled", "error": "공개판에는 없는 기능입니다"}
 
     def gsr_companions_get(self) -> dict:
         from lecturehub.core import settings
@@ -563,16 +572,44 @@ class Backend:
 
         return {"ok": True, **setup.info()}
 
+    def _setup_allowed(self) -> bool:
+        """The first run, or leaving the trial semester (its bar opens the same wizard; after setup_prepare the trial
+        flag is gone, the folder the wizard made is what counts)."""
+        from lecturehub.core import settings
+
+        return self.needs_setup or self.setup_root is not None or bool(settings.get("trial"))
+
     def setup_apply(self, parent: str, term: str, courses: list, term_start: str = "", term_end: str = "",
-                    layout: str = "") -> dict:
+                    layout: str = "", base: str | None = None) -> dict:
         from lecturehub.ui import setup
 
-        if not self.needs_setup:
+        if not self._setup_allowed():
             return {"ok": False, "error": "이미 설정되어 있습니다. 설정 화면에서 바꾸세요."}
         try:
-            return setup.apply(parent, term, courses, term_start, term_end, layout)
+            return setup.apply(parent, term, courses, term_start, term_end, layout, base=base or None)
         except setup.SetupError as exc:
             return {"ok": False, "error": str(exc)}
+
+    def setup_prepare(self, parent: str, term: str, layout: str = "") -> dict:
+        """D-086: make the semester folder before the timetable step (the AI app link needs a folder to write into)."""
+        from lecturehub.ui import setup
+
+        if not self._setup_allowed():
+            return {"ok": False, "error": "이미 설정되어 있습니다. 설정 화면에서 바꾸세요."}
+        try:
+            result = setup.prepare(parent, term, layout)
+        except setup.SetupError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.setup_root = Path(result["root"])
+        return result
+
+    def setup_timetable(self) -> dict:
+        """The timetable in the folder the wizard made, read now (the wizard polls this while Codex works)."""
+        from lecturehub.ui import setup
+
+        if self.setup_root is None:
+            return {"ok": False, "error": "학기 폴더를 아직 만들지 않았습니다."}
+        return {"ok": True, **setup.timetable_state(self.setup_root)}
 
     # ---------- connections: keys, tools, what each feature needs (settings screen)
     def conn_status(self, check_login: bool = False) -> dict:
@@ -677,6 +714,20 @@ class Backend:
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
 
+    def recording_permission_many(self, courses: list[str], state: str) -> dict:
+        """settings › 녹음·전사 "모든 과목을 [상태]로": only the courses this screen lists (timetable and 수업 외)."""
+        from lecturehub.core import recording_permission as permission
+
+        known = {c.folder for c in self.courses} | set(self.extras())
+        unknown = [c for c in courses if c not in known]
+        if unknown:
+            return {"ok": False, "error": f"시간표에 없는 과목입니다: {', '.join(unknown[:3])}"}
+        try:
+            rows = permission.set_many(self.root, list(courses), state)
+            return {"ok": True, "changed": len(rows), "courses": rows}
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+
     def devices(self) -> dict:
         if self.fake_engine:
             return {"mic": [{"name": "FakeSource (synthetic sine)", "default": True}], "loopback": []}
@@ -732,7 +783,7 @@ class Backend:
         status = self.engine_status()
         return {"ok": True, "at": now, "recording": bool(self.recording),
                 "google": {"state": status["google"], "quota": self.quota_status(),
-                           "note": "하루 요청 수 한도(요청 1회 = 40분 조각 1개)"},
+                           "note": "Google(Gemini) 무료 요청 한도 · 조각 길이는 현재 프리셋 기준"},
                 "whisper": {"state": status["whisper"], "usage": usage.whisper_usage(self.root, now),
                             "note": "Groq 무료 티어: 오디오 시간 한도(시간당 2시간, 하루 8시간)"},
                 "mai": {"state": status["mai"], "usage": usage.mai_usage(self.root, now),
@@ -872,8 +923,12 @@ class Backend:
     # ---------- stored consents for sending to outside services: list and take back (settings screen)
     CONSENT_LABELS = {"gemini_transcribe": "Google · 녹음 전사", "whisper_groq": "Groq · 녹음 전사",
                       "google_live": "Google · 실시간 자막", "mai_playground": "Microsoft · MAI 전사",
-                      "codex_note": "OpenAI Codex · 정리본", "claude_note": "Anthropic · 정리본",
-                      "claude_qa": "Anthropic · 질의응답 도우미", "claude_assignment": "Anthropic · 과제 도우미"}
+                      "codex_note": "OpenAI Codex · 정리본", "codex_notices": "OpenAI Codex · 수업 중 공지 찾기",
+                      "codex_etl_notices": "OpenAI Codex · eTL 공지에서 일정 찾기",
+                      "claude_note": "Anthropic · 정리본",
+                      "claude_qa": "Anthropic · 질의응답 도우미", "ai_app_link": "AI 앱 연결 · 내가 연결한 AI 앱",
+                      # the assignment helper was removed (2026-11-22); an old consent still shows so it can be taken back
+                      "claude_assignment": "Anthropic · 과제 도우미(없어진 기능)"}
 
     def consent_list(self) -> dict:
         from lecturehub.transcription.consent import ConsentStore
@@ -891,6 +946,274 @@ class Backend:
             return {"ok": False, "error": "저장된 동의가 없습니다."}
         applog.LOG.info("외부 전송 동의 하나를 철회함")
         return {"ok": True, **self.consent_list()}
+
+    # ---------- AI app link (D-072): master switch, per-course allow, what to paste into the AI app
+    def _ai_link_courses(self) -> list[str]:
+        from lecturehub.transcription.consent import named
+
+        return [c for c in dict.fromkeys([c.folder for c in self.courses] + self.extras()) if named(c)]
+
+    def ai_link_status(self) -> dict:
+        from lecturehub.core import settings
+        from lecturehub.mcp import config
+        from lecturehub.mcp.access import PROVIDER
+        from lecturehub.transcription.consent import ConsentStore
+
+        from lecturehub.ai.codex import CodexEngine
+        from lecturehub.mcp import changes, connect
+
+        from lecturehub.mcp.approve import KINDS
+
+        store = ConsentStore(self.root / "_lecturehub" / "consent.json")
+        courses = [{"course": c, "allowed": store.granted(PROVIDER, c)} for c in self._ai_link_courses()]
+        state = settings.ai_link()
+        auto = settings.ai_link_auto()  # D-080: per kind "묻기" (false) or "자동" (true)
+        return {"ok": True, "enabled": state["enabled"], "write": state["write"], "courses": courses,
+                "auto": [{"kind": kind, "label": label, "auto": auto[kind]} for kind, label in KINDS.items()],
+                "changes": changes.recent(self.root, 20), "apps": [connect.status(a) for a in connect.APPS],
+                "codex_found": CodexEngine().available(), **config.snippets()}
+
+    def ai_link_enable(self, on: bool) -> dict:
+        from lecturehub.core import settings
+
+        state = settings.set_ai_link(bool(on))
+        applog.LOG.info("AI 앱 연결 %s", "켬" if state["enabled"] else "끔")
+        return {"ok": True, **self.ai_link_status()}
+
+    def ai_link_write(self, on: bool) -> dict:
+        """D-076: "AI 앱이 고칠 수 있게" — a plain switch (no dialog, owner 2026-11-25). Only with the link on."""
+        from lecturehub.core import settings
+
+        if on and not settings.ai_link()["enabled"]:
+            return {"ok": False, "error": "AI 앱 연결을 먼저 켜세요."}
+        state = settings.set_ai_link_write(bool(on))
+        applog.LOG.info("AI 앱 연결: 고치기 %s", "켬" if state["write"] else "끔")
+        return {"ok": True, **self.ai_link_status()}
+
+    def ai_link_auto(self, kind: str, on: bool) -> dict:
+        """D-080: one kind of AI app change to "자동" (on) or back to "묻기". Going to 자동 is allowed only through
+        ``Api.ai_link_auto`` with the native dialog's token; going back needs nothing (it only narrows)."""
+        from lecturehub.core import settings
+
+        if kind == "*" and on:  # [모두 자동] (the Api checked its one dialog's token)
+            settings.set_ai_link_auto_all()
+            applog.LOG.info("AI 앱 연결: 모든 종류 → 자동")
+            return {"ok": True, **self.ai_link_status()}
+        if kind not in settings.AI_AUTO_KINDS:
+            return {"ok": False, "error": "알 수 없는 종류입니다."}
+        settings.set_ai_link_auto(kind, bool(on))
+        applog.LOG.info("AI 앱 연결: %s → %s", kind, "자동" if on else "묻기")
+        return {"ok": True, **self.ai_link_status()}
+
+    def ai_link_auto_reset(self) -> dict:
+        """[모두 다시 묻기]."""
+        from lecturehub.core import settings
+
+        settings.reset_ai_link_auto()
+        applog.LOG.info("AI 앱 연결: 모든 종류를 다시 묻기로")
+        return {"ok": True, **self.ai_link_status()}
+
+    def ai_change_undo(self, change_id: str) -> dict:
+        """[되돌리기] of one item of "AI가 바꾼 것" (the app does undo, never the AI app)."""
+        from lecturehub.mcp import changes
+
+        if self.needs_setup:
+            return {"ok": False, "error": "처음 설정을 먼저 마치세요."}
+        try:
+            result = changes.undo(self.root, str(change_id))
+        except changes.WriteRefused as exc:
+            return {**self.ai_link_status(), "ok": False, "error": str(exc)}
+        applog.LOG.info("AI 앱 연결: AI가 바꾼 것 하나를 되돌림")
+        self._bump_library()
+        return {**self.ai_link_status(), **result}
+
+    def ai_change_undo_since(self, change_id: str) -> dict:
+        """"이 시각 이후 모두 되돌리기": every AI change from that item's time on, newest first; what was changed since
+        is skipped and counted (integration review: one click after a prompt-injection run)."""
+        from lecturehub.mcp import changes
+
+        if self.needs_setup:
+            return {"ok": False, "error": "처음 설정을 먼저 마치세요."}
+        try:
+            result = changes.undo_since(self.root, str(change_id))
+        except changes.WriteRefused as exc:
+            return {**self.ai_link_status(), "ok": False, "error": str(exc)}
+        applog.LOG.info("AI 앱 연결: AI가 바꾼 것 %d건을 되돌림(건너뜀 %d건)", result["undone"], len(result["skipped"]))
+        if result["undone"]:
+            self._bump_library()
+        return {**self.ai_link_status(), **result}
+
+    def ai_link_disconnect(self, app: str) -> dict:
+        """[연결 해제]: takes out exactly what [연결] added (no dialog: it only narrows)."""
+        from lecturehub.mcp import connect
+
+        try:
+            connect.disconnect(str(app))
+        except connect.ConfigError as exc:
+            return {**self.ai_link_status(), "ok": False, "error": str(exc)}
+        applog.LOG.info("AI 앱 연결: %s 설정에서 뺌", app)
+        return {"ok": True, **self.ai_link_status()}
+
+    def ai_link_connect(self, app: str) -> dict:
+        """[연결] after the native dialog (only through ``Api.ai_link_connect``, which takes the dialog's token)."""
+        from lecturehub.mcp import connect
+
+        try:
+            connect.connect(str(app))
+        except connect.ConfigError as exc:
+            return {**self.ai_link_status(), "ok": False, "error": str(exc)}
+        applog.LOG.info("AI 앱 연결: %s 설정에 넣음", app)
+        return {"ok": True, **self.ai_link_status()}
+
+    def _ai_changes_check(self) -> None:
+        """A running app shows what an AI app changed without a restart: the MCP process rewrites a marker after every
+        commit; a cheap stat here (at most every 1.5 s, on the state poll) bumps the library version."""
+        now = time.monotonic()
+        if now - getattr(self, "_ai_seen_at", 0.0) < 1.5 or self.needs_setup or not self.root:
+            return
+        self._ai_seen_at = now
+        from lecturehub.mcp import changes
+
+        mark = changes.signature(self.root)
+        seen = getattr(self, "_ai_mark", "unset")
+        self._ai_mark = mark
+        if seen == "unset":
+            self._timetable_check(reload=False)  # the first look only remembers, here too
+        elif mark != seen:
+            self._bump_library()
+            self._timetable_check()  # D-083: an AI app may have changed 시간표.csv (set_timetable, or its undo)
+
+    def _timetable_check(self, reload: bool = True) -> None:
+        """Re-read the courses when 시간표.csv changed since the last look, and tell the page (``timetable_version``:
+        it reloads the course list). The library's weekly slots were already synced by whoever wrote the file."""
+        try:
+            stat = self.timetable_path.stat()
+            signature = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            signature = None
+        if signature == getattr(self, "_timetable_seen", "unset"):
+            return
+        self._timetable_seen = signature
+        if not reload:
+            return
+        try:
+            courses = load_courses(self.timetable_path, self.root)
+        except Exception:  # noqa: BLE001 - review L5: a file that cannot be read (cp949, ...) keeps the old timetable
+            from lecturehub.core import applog
+
+            applog.swallowed("시간표 다시 읽기")
+            return
+        self.courses = courses
+        with self._lock:
+            self._state["timetable_version"] = self._state.get("timetable_version", 0) + 1
+
+    def ai_link_allow(self, course: str) -> dict:
+        """Store this course's consent. Only through ``Api.ai_link_allow``, which takes the native dialog's token."""
+        from lecturehub.mcp.access import PROVIDER
+        from lecturehub.transcription.consent import NOTICES, ConsentStore
+
+        if self.needs_setup:
+            return {"ok": False, "error": "처음 설정을 먼저 마치세요."}
+        if course not in self._ai_link_courses():
+            return {"ok": False, "error": "시간표나 수업 외 목록에 있는 과목만 허용할 수 있습니다."}
+        ConsentStore(self.root / "_lecturehub" / "consent.json").grant(
+            PROVIDER, course, int(time.time() * 1000), NOTICES[PROVIDER], by="user_app_dialog")
+        applog.LOG.info("AI 앱 연결: 과목 하나를 허용함")
+        return {"ok": True, **self.ai_link_status()}
+
+    def _grant_many(self, provider: str, courses: list[str]) -> str | None:
+        """Store one consent per listed course (several courses named in one dialog). All or nothing: a name that
+        is not a course of this install stores nothing. Returns the error, or None."""
+        from lecturehub.transcription.consent import NOTICES, ConsentStore
+
+        if self.needs_setup:
+            return "처음 설정을 먼저 마치세요."
+        known = self._ai_link_courses()
+        if not courses or any(course not in known for course in courses):
+            return "시간표나 수업 외 목록에 있는 과목만 허용할 수 있습니다."
+        store = ConsentStore(self.root / "_lecturehub" / "consent.json")
+        now = int(time.time() * 1000)
+        for course in courses:
+            store.grant(provider, course, now, NOTICES[provider], by="user_app_dialog")
+        return None
+
+    def ai_link_allow_many(self, courses: list[str]) -> dict:
+        """Only through ``Api.ai_link_allow_all`` (the token of the dialog that named these courses)."""
+        from lecturehub.mcp.access import PROVIDER
+
+        error = self._grant_many(PROVIDER, list(courses))
+        if error:
+            return {"ok": False, "error": error}
+        applog.LOG.info("AI 앱 연결: 과목 %d개를 허용함", len(courses))
+        return {"ok": True, **self.ai_link_status()}
+
+    def notices_allow_many(self, courses: list[str]) -> dict:
+        """Only through ``Api.notices_allow_all`` (the token of the dialog that named these courses)."""
+        error = self._grant_many(NOTICES_PROVIDER, list(courses))
+        if error:
+            return {"ok": False, "error": error}
+        applog.LOG.info("수업 중 공지 찾기(Codex): 과목 %d개를 허용함", len(courses))
+        return {"ok": True, "courses": self.notices_courses()}
+
+    def consent_revoke_many(self, provider: str, courses: list[str]) -> dict:
+        from lecturehub.transcription.consent import ConsentStore
+
+        store = ConsentStore(self.root / "_lecturehub" / "consent.json")
+        now = int(time.time() * 1000)
+        revoked = sum(1 for course in courses if store.revoke(str(provider), str(course), now))
+        applog.LOG.info("외부 전송 동의 %d개를 철회함", revoked)
+        return {"ok": True, "revoked": revoked, **self.consent_list()}
+
+    # ---------- class notices through ChatGPT (Codex), D-073: per-course consent ``codex_notices``
+    def notices_courses(self) -> list[dict]:
+        """The courses of the timetable and the extra list, and whether each may go to Codex for class notices."""
+        from lecturehub.transcription.consent import ConsentStore
+
+        store = ConsentStore(self.root / "_lecturehub" / "consent.json")
+        return [{"course": c, "allowed": store.granted(NOTICES_PROVIDER, c)} for c in self._ai_link_courses()]
+
+    def notices_allow(self, course: str) -> dict:
+        """Store this course's ``codex_notices`` consent. Only through ``Api.notices_allow`` (native dialog token)."""
+        from lecturehub.transcription.consent import NOTICES, ConsentStore
+
+        if self.needs_setup:
+            return {"ok": False, "error": "처음 설정을 먼저 마치세요."}
+        if course not in self._ai_link_courses():
+            return {"ok": False, "error": "시간표나 수업 외 목록에 있는 과목만 허용할 수 있습니다."}
+        ConsentStore(self.root / "_lecturehub" / "consent.json").grant(
+            NOTICES_PROVIDER, course, int(time.time() * 1000), NOTICES[NOTICES_PROVIDER], by="user_app_dialog")
+        applog.LOG.info("수업 중 공지 찾기(Codex): 과목 하나를 허용함")
+        return {"ok": True, "courses": self.notices_courses()}
+
+    # ---------- eTL announcements through ChatGPT (Codex), D-077: per-course consent ``codex_etl_notices``
+    def etl_notices_courses(self) -> list[dict]:
+        """The courses and whether each may send its eTL announcements to Codex."""
+        from lecturehub.transcription.consent import ConsentStore
+
+        store = ConsentStore(self.root / "_lecturehub" / "consent.json")
+        return [{"course": c, "allowed": store.granted(ETL_NOTICES_PROVIDER, c)} for c in self._ai_link_courses()]
+
+    def etl_notices_allow(self, course: str) -> dict:
+        """Store this course's ``codex_etl_notices`` consent. Only through ``Api.etl_notices_allow`` (native dialog
+        token)."""
+        from lecturehub.transcription.consent import NOTICES, ConsentStore
+
+        if self.needs_setup:
+            return {"ok": False, "error": "처음 설정을 먼저 마치세요."}
+        if course not in self._ai_link_courses():
+            return {"ok": False, "error": "시간표나 수업 외 목록에 있는 과목만 허용할 수 있습니다."}
+        ConsentStore(self.root / "_lecturehub" / "consent.json").grant(
+            ETL_NOTICES_PROVIDER, course, int(time.time() * 1000), NOTICES[ETL_NOTICES_PROVIDER], by="user_app_dialog")
+        applog.LOG.info("eTL 공지 일정 찾기(Codex): 과목 하나를 허용함")
+        return {"ok": True, "etl_courses": self.etl_notices_courses()}
+
+    def etl_notices_allow_many(self, courses: list[str]) -> dict:
+        """Only through ``Api.etl_notices_allow_all`` (the token of the dialog that named these courses)."""
+        error = self._grant_many(ETL_NOTICES_PROVIDER, list(courses))
+        if error:
+            return {"ok": False, "error": error}
+        applog.LOG.info("eTL 공지 일정 찾기(Codex): 과목 %d개를 허용함", len(courses))
+        return {"ok": True, "etl_courses": self.etl_notices_courses()}
 
     def captions_check(self, course: str) -> dict:
         from lecturehub.transcription import captions
@@ -1108,7 +1431,7 @@ class Backend:
         return stopped
 
     def _open_claude(self, prompt: str, title: str) -> bool:
-        """A console with Claude Code in this app's repository (same way as the assignment helper)."""
+        """A console with Claude Code in this app's repository."""
         claude = _claude_exe()
         if not claude:
             return False
@@ -1119,6 +1442,10 @@ class Backend:
 
     # ---------- state
     def state(self) -> dict:
+        try:
+            self._ai_changes_check()
+        except OSError:
+            pass
         with self._lock:
             return json.loads(json.dumps(self._state))
 

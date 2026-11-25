@@ -13,6 +13,7 @@ from pathlib import Path
 
 from lecturehub.core import db
 from lecturehub.core.paths import database_path
+from lecturehub.materials.units import page_unit
 
 _CLOVA_LOCK = threading.Lock()  # the [확인] button and the weekly check never run together
 _NOTICE_LOCK = threading.Lock()  # one AI reading of class notices at a time (start-up and the loop)
@@ -44,6 +45,62 @@ class Library:
     def _open(self):
         self._ensure()
         return closing(db.connect(self.path))
+
+    @_safe
+    def today_briefing(self, now) -> dict:
+        from dataclasses import asdict
+        from lecturehub.index import reminders, schedule
+
+        with closing(db.connect_readonly(self.path, timeout=0.05)) as connection:
+            view = reminders.today(connection, self.root, now)
+            # Display cancellations without changing the recorder or toast schedule.
+            view["classes"] = [asdict(c) for c in schedule.daily_schedule(connection, now.date(), include_cancelled=True)]
+            return {**view, "now": now.isoformat()}
+
+    @_safe
+    def week_view(self, now, offset=0) -> dict:
+        """D-081: one short read-only connection, no setup, writes or recorder access."""
+        import re
+        from dataclasses import asdict
+        from datetime import timedelta
+
+        from lecturehub.index import reminders, schedule
+
+        monday = now.date() - timedelta(days=now.weekday()) + timedelta(weeks=int(offset))
+        # reminders.items uses its clock's date for the calendar range. Anchor it
+        # at this Monday so past days and browsed weeks use exactly the same rules.
+        anchor = now.replace(year=monday.year, month=monday.month, day=monday.day, hour=0, minute=0, second=0, microsecond=0)
+        with closing(db.connect_readonly(self.path, timeout=0.05)) as connection:
+            rows = reminders.items(connection, self.root, anchor)
+            days = []
+            for n in range(7):
+                day = monday + timedelta(days=n)
+                classes = [asdict(c) for c in schedule.daily_schedule(connection, day, include_cancelled=True)]
+                # Schedule has no room column. Only a literal labelled room in
+                # an exception note is known; never guess a room from prose.
+                for c in classes:
+                    room = re.search(r"(?:강의실|장소)\s*[:：]\s*([^;\n·]+)", c["note"])
+                    if room:
+                        c["room"] = room[1].strip()
+                listed = [{**r, "at": r["at"].isoformat()} for r in rows if r["at"].date() == day]
+                if n < 5 or classes or listed:
+                    days.append({"date": day.isoformat(), "classes": classes, "items": listed})
+        classes = [c for d in days for c in d["classes"] if c["end_ms"] > c["start_ms"]]
+        hour = 3_600_000
+        start = min((c["start_ms"] // hour * hour for c in classes), default=9 * hour)
+        end = max((((c["end_ms"] + hour - 1) // hour) * hour for c in classes), default=17 * hour)
+        end = min(24 * hour, max(end, start + 4 * hour))
+        start = max(0, min(start, end - 4 * hour))
+        return {"date": now.date().isoformat(), "now_ms": ((now.hour * 60 + now.minute) * 60 + now.second) * 1000 + now.microsecond // 1000,
+                "start": monday.isoformat(), "end": (monday + timedelta(days=6)).isoformat(),
+                "start_ms": start, "end_ms": end, "days": days}
+
+    def reminder_tick(self, *, clock, toast) -> None:
+        # D-050: never _ensure/index/upgrade here, even for a newly selected semester.
+        from lecturehub.index import reminders
+
+        with closing(db.connect_readonly(self.path, timeout=0.05)) as connection:
+            reminders.tick(connection, self.root, clock=clock, toast=toast)
 
     def _ensure(self) -> None:
         """Once per run, before the first use: build the library of a semester folder that has none yet (the
@@ -199,11 +256,11 @@ class Library:
 
         current = settings.data_root()
         if current is not None and not settings.get("trial"):
-            return {"ok": False, "error": "이미 학기 폴더가 정해져 있어 체험 학기로 바꾸지 않습니다."}
+            return {"ok": False, "error": "이미 학기 폴더가 정해져 있어 예시 학기로 바꾸지 않습니다."}
         try:
             result = demo.make()
         except (OSError, RuntimeError, ValueError) as exc:
-            return {"ok": False, "error": f"체험 학기를 만들지 못했습니다: {exc}"}
+            return {"ok": False, "error": f"예시 학기를 만들지 못했습니다: {exc}"}
         from lecturehub.ui.setup import write_recorder_config
 
         root = Path(result["root"])
@@ -211,8 +268,9 @@ class Library:
         try:  # without recorder.toml the window refuses to record; a config of the user's own stays as it is
             write_recorder_config(root, table if table.is_file() else None, replace=bool(settings.get("trial")))
         except OSError as exc:
-            return {"ok": False, "error": f"체험 학기 녹음 설정을 쓰지 못했습니다: {exc}"}
-        settings.save({"data_root": result["root"], "trial": True})
+            return {"ok": False, "error": f"예시 학기 녹음 설정을 쓰지 못했습니다: {exc}"}
+        settings.save({"data_root": result["root"], "trial": True, "labs": {"gsr": False},
+                       "reminders": {"deadlines": True, "briefing": True, "muted_courses": ["관개배수공학"]}})
         return {"ok": True, **result}
 
     # ---------- recordings to the Recycle Bin some days after the Google transcript (index/audio_cleanup.py)
@@ -371,6 +429,7 @@ class Library:
                 "engine": lectures.engine_label(r.engine) if r.engine else None,
                 "text": r.text, "before": r.context_before, "after": r.context_after, "page": r.page_no,
                 "no_media": r.no_media, "path": r.path if r.source_kind == "material" else None,
+                "unit": page_unit(r.path) if r.source_kind == "material" else None,
             } for r in search(connection, query, limit=40) if self._in_lecture_part(connection, r, spans)]
             like = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
             for row in connection.execute(
@@ -463,7 +522,7 @@ class Library:
     def clova_sync(self, auto: bool = False) -> dict:
         """[클로바노트 확인] or the weekly check: new notes go to Downloads (1~2 minutes, network only: allowed while
         recording). One check at a time; the weekly one runs only when ``clova_fetch.due`` and Aside CLI is there."""
-        from lecturehub.booking import aside_cli
+        from lecturehub.core import aside_cli
         from lecturehub.core import settings
         from lecturehub.index import clova_fetch
 
@@ -728,7 +787,10 @@ class Library:
             view = calendar_events.month_view(connection, int(year), int(month), today)
             view["courses"] = [{"id": r[0], "folder": r[1]} for r in
                                connection.execute("SELECT id, folder_name FROM Course ORDER BY rowid")]
-        return view
+        from lecturehub.index import etl_submissions
+
+        # D-077: handed-in eTL assignments leave the grid and lists (kept under "제출함"), missing ones say 누락
+        return etl_submissions.annotate(view, self.root, today if isinstance(today, date) else None)
 
     @_safe
     def calendar_add(self, values: dict) -> dict:
@@ -869,102 +931,6 @@ class Library:
 
         return etl_files.keep(self.root, int(file_id))
 
-    # ---------- assignment helper (user request 2026-09-29): gather for Claude, then a Claude Code session
-    def _consent_store(self):
-        from lecturehub.transcription.consent import ConsentStore
-
-        return ConsentStore(self.root / "_lecturehub" / "consent.json")
-
-    @_safe
-    def assignment_prepare(self, event_id: str) -> dict:
-        """Build the pack. Returns {"need_consent": course, "notice": ...} when the course is not agreed yet."""
-        from lecturehub.core import edition
-
-        if not edition.has("assignment"):
-            return {"ok": False, "error": "공개판에 포함되지 않은 기능입니다.", "reason": "공개판에 포함되지 않은 기능입니다.", "state": "disabled", "running": False}
-        from lecturehub.index import assignment_pack
-
-        try:
-            with self._open() as connection:
-                manifest = assignment_pack.build(connection, self.root, event_id, consent=self._consent_store())
-        except assignment_pack.ConsentNeeded as exc:
-            return {"need_consent": exc.course, "notice": assignment_pack.CONSENT_NOTICE}
-        files = manifest["files"]
-        top = [x["date"] for x in manifest["lectures"][:3]]
-        return {"pack": manifest["pack"], "ref": manifest["assignment"]["source_ref"] or manifest["assignment"]["event_id"],
-                "counts": {k: len(v) for k, v in files.items()}, "lectures": len(manifest["lectures"]),
-                "top_lectures": top, "ai_policy": manifest["ai_policy"]["summary"],
-                "etl": bool(manifest.get("etl") and not manifest["etl"].get("error"))}
-
-    def assignment_notice(self) -> str:
-        """The consent text the native confirmation window shows (ui/app.py consent_confirm)."""
-        from lecturehub.core import edition
-
-        if not edition.has("assignment"):
-            raise ValueError("공개판에 포함되지 않은 기능입니다.")
-        from lecturehub.index import assignment_pack
-
-        return assignment_pack.CONSENT_NOTICE
-
-    @_safe
-    def assignment_consent(self, course: str) -> dict:
-        from lecturehub.core import edition
-
-        if not edition.has("assignment"):
-            return {"ok": False, "error": "공개판에 포함되지 않은 기능입니다.", "reason": "공개판에 포함되지 않은 기능입니다.", "state": "disabled", "running": False}
-        import time
-
-        from lecturehub.index import assignment_pack
-
-        self._consent_store().grant(assignment_pack.PROVIDER, course, int(time.time() * 1000),
-                                    assignment_pack.CONSENT_NOTICE, by="user-app")
-        return {}
-
-    def _pack_of(self, event_id: str) -> tuple[Path, str]:
-        from lecturehub.index import assignment_pack
-
-        with self._open() as connection:
-            item = assignment_pack.find(connection, event_id)
-        ref = item["source_ref"] or item["event_id"]
-        pack = assignment_pack.pack_dir(self.root, ref)
-        if not (pack / "pack.json").is_file():
-            raise ValueError("과제 묶음이 아직 없습니다. [과제 준비]를 먼저 누르세요.")
-        return pack, ref
-
-    @_safe
-    def assignment_open(self, event_id: str, opener=None) -> dict:
-        from lecturehub.core import edition
-
-        if not edition.has("assignment"):
-            return {"ok": False, "error": "공개판에 포함되지 않은 기능입니다.", "reason": "공개판에 포함되지 않은 기능입니다.", "state": "disabled", "running": False}
-        from lecturehub.core import safe_open
-
-        pack, _ref = self._pack_of(event_id)
-        safe_open.startfile(pack, opener)  # a folder; the allow-list refuses anything that could run
-        return {"pack": str(pack)}
-
-    @_safe
-    def assignment_claude(self, event_id: str, launcher=None) -> dict:
-        """Open a console with Claude Code in this app's repository, running /assignment for this pack."""
-        from lecturehub.core import edition
-
-        if not edition.has("assignment"):
-            return {"ok": False, "error": "공개판에 포함되지 않은 기능입니다.", "reason": "공개판에 포함되지 않은 기능입니다.", "state": "disabled", "running": False}
-        import shutil
-        import subprocess
-
-        _pack, ref = self._pack_of(event_id)
-        repo = Path(__file__).resolve().parents[3]  # src/lecturehub/ui/library.py → repository
-        claude = shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude.exe")
-        command = ["cmd", "/c", "start", "Lecture Hub 과제", "cmd", "/k", claude, f"/assignment {ref}"]
-        if launcher:
-            launcher(command, repo)
-        else:
-            if not Path(claude).is_file():
-                raise ValueError("Claude Code(claude)를 찾지 못했습니다. 터미널에서 claude를 설치했는지 확인하세요.")
-            subprocess.Popen(command, cwd=str(repo), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        return {"ref": ref, "repo": str(repo)}
-
     @_safe
     def note_check(self, lecture_id: str) -> dict:
         from lecturehub.study.note_job import consent_info
@@ -1056,33 +1022,86 @@ class Library:
         with self._open() as connection, connection:
             return exam_prep.answer(connection, item_id, str(given or ""), None if correct is None else bool(correct))
 
+    def _etl_pull(self) -> dict:
+        """Fetch eTL deadlines with my submission states (at most every few hours, ``etl_sync.MIN_INTERVAL_S``; when
+        connected), with them the announcements and file lists (lists only, nothing is downloaded), and import the
+        deadlines into the calendar. Returns the import's counts."""
+        from lecturehub.index import calendar_events, etl_sync
+
+        synced = etl_sync.sync(self.root)  # failures are kept in etl\sync.json
+        if synced.get("state") == "synced":
+            from lecturehub.index import etl_files
+
+            try:
+                etl_files.refresh(self.root, etl_sync.load_token())
+            except Exception:  # noqa: BLE001, S110 - the deadlines above are what must not fail
+                pass
+        with self._open() as connection, connection:
+            return calendar_events.import_etl(connection, self.root / "_lecturehub" / "etl" / "assignments.json")
+
+    def etl_auto(self) -> dict:
+        """The 10-minute round of the window (never while recording — the caller checks): the eTL lists when due
+        (``etl_sync.sync`` itself waits ``MIN_INTERVAL_S`` between fetches), so new assignments, changed due dates,
+        submissions and new files are seen while the app stays open (D-077)."""
+        if not self.path.is_file():
+            return {"ok": False, "error": "no library"}
+        try:
+            return {"ok": True, "etl": self._etl_pull()}
+        except Exception as exc:  # noqa: BLE001 - tried again next round
+            return {"ok": False, "error": str(exc)}
+
+    # ---------- eTL news told by a Windows notification (index/etl_news.py, D-077)
+    def etl_news_collect(self) -> list[dict]:
+        """What is new in the stored eTL lists since the last look; the window tells it (not while recording)."""
+        from lecturehub.index import etl_news
+
+        try:
+            return [{**n, "line": etl_news.line(n)} for n in etl_news.collect(self.root)]
+        except Exception:  # noqa: BLE001 - nothing to tell this round; the record is unchanged
+            return []
+
+    @staticmethod
+    def etl_notify(kind: str | None = None, on: bool | None = None) -> dict:
+        """The notification switches (settings › 기본 › 알림); with ``kind``, set that one. The window's recording path
+        does not import ``index`` (D-050), so it asks here."""
+        from lecturehub.index import etl_news
+
+        try:
+            switches = etl_news.switches() if kind is None else etl_news.set_switch(str(kind), bool(on))
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "switches": switches, "labels": dict(etl_news.SWITCHES)}
+
+    @_safe
+    def etl_news_new(self) -> dict:
+        from lecturehub.index import etl_news
+
+        return {"items": etl_news.unseen(self.root)}
+
+    @_safe
+    def etl_news_seen(self, keys: list) -> dict:
+        from lecturehub.index import etl_news
+
+        return {"seen": etl_news.mark_seen(self.root, [str(k) for k in keys or []])}
+
     def calendar_refresh(self) -> dict:
         """App start (not while recording): fetch eTL deadlines (when connected), import them and find new
         spoken dates. Errors are returned."""
-        from lecturehub.index import calendar_events, etl_sync
+        from lecturehub.index import calendar_events
 
         if not self.path.is_file():
             return {"ok": False, "error": "no library"}
         try:
-            synced = etl_sync.sync(self.root)  # at most every few hours; failures are kept in etl\sync.json
-            if synced.get("state") == "synced":  # announcements and file lists with it (lists only, nothing is fetched)
-                from lecturehub.index import etl_files
-
-                try:
-                    etl_files.refresh(self.root, etl_sync.load_token())
-                except Exception:  # noqa: BLE001, S110 - the deadlines above are what must not fail
-                    pass
-            with self._open() as connection, connection:
-                etl = calendar_events.import_etl(connection, self.root / "_lecturehub" / "etl" / "assignments.json")
+            etl = self._etl_pull()
             board_new = self.etl_board_auto()  # course boards once a day; new posts are told (user 2026-11-20)
             from datetime import datetime
 
             notices = self.notices_scan(datetime.now().astimezone().date())
             spoken = {}
-            # The AI reading did not run (no key, an error) or is switched off in settings: the old word rules
-            # still find the plain cases. They work on this PC and send nothing. (Before 2026-11-16 the switch
-            # being off counted as "read", so nothing looked at the transcripts at all.)
-            if not notices.get("ok") or notices.get("disabled"):
+            # The AI reading did not run (no key, an error, Codex missing or logged out) or is switched off in
+            # settings: the old word rules still find the plain cases. They work on this PC and send nothing. (Before
+            # 2026-11-16 the switch being off counted as "read", so nothing looked at the transcripts at all.)
+            if not notices.get("ok") or notices.get("disabled") or notices.get("unavailable"):
                 with self._open() as connection, connection:
                     spoken = calendar_events.scan_transcripts(connection)
             else:
@@ -1100,45 +1119,137 @@ class Library:
             return {"ok": False, "error": str(exc)}
 
     # ---------- schedule notices heard in class, read by AI from the whole transcript (user request 2026-10-30)
-    def notices_scan(self, today: date, force: bool = False, lecture_ids: list | None = None) -> dict:
-        """Read lectures whose transcripts changed (network only, Gemini text). One reading at a time.
+    def notices_scan(self, today: date, force: bool = False, lecture_ids: list | None = None, *,
+                     busy=None, stop=None) -> dict:
+        """Read lectures whose transcripts changed (Gemini text over the network, or the local Codex CLI with the
+        user's ChatGPT login — ``class_notices.engine()``). One reading at a time (``_NOTICE_LOCK``).
+
+        ``busy``: the window's "a recording is running"; a recording session lock under ``_lecturehub\\recordings``
+        counts too (a recording started outside the app). On the Codex path nothing is started while either says
+        so, and a running request is cancelled when one starts or ``stop`` (the app is closing) is set.
 
         ``force`` and ``lecture_ids`` go on to ``class_notices.scan`` (a reading regardless of the switch in
         settings). Nothing in the app passes them: the two callers, the 10-minute loop and ``calendar_refresh``,
         give the date only, and no window method or command reaches them (checked 2026-11-16)."""
-        from lecturehub.index import class_notices
+        from lecturehub.index import class_notices, note_pack
 
         lock = _NOTICE_LOCK
         if not self.path.is_file():
             return {"ok": False, "error": "no library"}
         if not lock.acquire(blocking=False):
             return {"ok": True, "busy": True, "read": 0, "added": []}
+        root = self.root
+
+        def recording() -> bool:
+            return bool(busy and busy()) or note_pack._recording_now(root)
+
         try:
             with self._open() as connection, connection:
                 result = class_notices.scan(connection, self.root, today, force=bool(force),
-                                            lecture_ids=list(lecture_ids) if lecture_ids else None)
+                                            lecture_ids=list(lecture_ids) if lecture_ids else None,
+                                            busy=recording, stop=stop)
+            if not (force or lecture_ids or result.get("recording") or result.get("stopped")):
+                # eTL announcements through the same Codex path, with their own per-course consent (D-077). Its
+                # findings join "added" so the banner and the Windows notification tell them the same way.
+                from lecturehub.index import etl_notices
+
+                try:
+                    with self._open() as connection, connection:
+                        etl = etl_notices.scan(connection, self.root, today, busy=recording, stop=stop)
+                except Exception as exc:  # noqa: BLE001 - the transcript reading above stands
+                    etl = {"error": str(exc), "added": []}
+                result = {**result, "added": list(result.get("added") or []) + list(etl.get("added") or []),
+                          "etl": etl}
             return {"ok": True, **result}
         except Exception as exc:  # noqa: BLE001 - no key, consent file broken, …: shown, never raised
             return {"ok": False, "error": str(exc)}
         finally:
             lock.release()
 
+    def notices_requested(self, today: date, *, busy=None, stop=None) -> dict:
+        """D-083: lectures an AI app asked to read again (``request_notice_rescan``, files under
+        ``_lecturehub/ai_link/rescan``). Each is read through ``notices_scan`` like any reading — the engine chosen
+        in settings, the course's consent checked again inside ``class_notices.scan`` — then its request is removed.
+        A request held back (another reading running, a recording, the app closing) stays for the next minute."""
+        from lecturehub.index import class_notices
+        from lecturehub.mcp import access, rescan_queue
+
+        rescan_queue.drop_stale(self.root)
+        added, done, errors, dropped = [], [], [], []
+        for request in rescan_queue.pending(self.root):
+            if (stop is not None and stop.is_set()) or (busy and busy()):
+                break
+            lecture_id = request["lecture_id"]
+            # D-083 review H2: asked again now, not only when the request was left — the notice search, the AI app
+            # link and its write switch still on, the course still allowed for the AI app — and at most one reading
+            # per lecture and PER_DAY in all per day (force skips the reading's own "unchanged transcript" rule)
+            read = rescan_queue.read_today(self.root)
+            if not (class_notices.enabled() and access.enabled() and access.write_enabled()
+                    and access.course_allowed(self.root, request.get("course"))) \
+                    or lecture_id in read or len(read) >= rescan_queue.PER_DAY:
+                rescan_queue.remove(self.root, lecture_id, request.get("change_id"))
+                dropped.append(lecture_id)
+                continue
+            result = self.notices_scan(today, force=True, lecture_ids=[lecture_id], busy=busy, stop=stop)
+            if result.get("busy") or result.get("recording") or result.get("stopped"):
+                break
+            rescan_queue.mark_read(self.root, lecture_id)
+            rescan_queue.remove(self.root, lecture_id, request.get("change_id"))
+            done.append(lecture_id)
+            added += list(result.get("added") or [])
+            if not result.get("ok") or result.get("errors") or result.get("unavailable"):
+                errors.append({"lecture_id": request["lecture_id"],
+                               "error": result.get("error") or result.get("unavailable") or "읽지 못함"})
+        return {"ok": True, "read": len(done), "added": added, "errors": errors, "dropped": dropped}
+
+    @staticmethod
+    def notices_wait(timeout: float) -> bool:
+        """Wait up to ``timeout`` seconds for a running reading to end (the app is closing: a cancelled Codex
+        request needs a moment to end its CLI process tree). True when none is running any more."""
+        if not _NOTICE_LOCK.acquire(timeout=max(0.0, float(timeout))):
+            return False
+        _NOTICE_LOCK.release()
+        return True
+
     @_safe
-    def notices_setting(self, today: date, set_to: bool | None = None) -> dict:
-        """Settings screen: is the background reading on, and how much it sent this month (no database).
+    def notices_setting(self, today: date, set_to: bool | None = None, engine: str | None = None) -> dict:
+        """Settings screen: is the background reading on, which engine reads (``codex``/``google``), how much it
+        sent this month (no database), and the last round's word (``class_notices.status``: what is missing,
+        courses waiting for the ``codex_notices`` consent).
 
         ``readings`` is the number of requests whose body went out this month, answered or not, and
-        ``characters`` what they carried. A count that cannot be read shows as zero and never hides the switch."""
+        ``characters`` what they carried. A count that cannot be read shows as zero and never hides the switch.
+        ``codex_found`` looks for the CLI (cached path lookup, no process is started)."""
         from lecturehub.index import class_notices
 
+        if engine is not None:
+            class_notices.set_engine(str(engine))
         if set_to is not None:
             class_notices.set_enabled(set_to)
         on = class_notices.enabled()
         try:
             use = class_notices.usage(self.root, today)
         except Exception:  # noqa: BLE001 - the switch must stay on screen whatever the count file holds
-            use = {"month": today.isoformat()[:7], "readings": 0, "characters": 0}
-        return {"on": on, **use}
+            use = {"month": today.isoformat()[:7], "readings": 0, "characters": 0, "by_engine": {}}
+        name = class_notices.engine()
+        last = class_notices.status(self.root)
+        try:
+            from lecturehub.ai.codex import CodexEngine
+
+            found = CodexEngine().available()
+        except Exception:  # noqa: BLE001 - shown as not found
+            found = False
+        from lecturehub.index import etl_notices
+
+        etl_last = etl_notices.status(self.root)  # eTL announcements through Codex (D-077): the last round's word
+        return {"on": on, **use, "engine": name, "engines": dict(class_notices.ENGINES),
+                "default_engine": class_notices.default_engine(), "codex_found": found,
+                "unavailable": last.get("unavailable") if last.get("engine") == name else None,
+                "needs_consent": [c for c in last.get("needs_consent") or [] if isinstance(c, str)]
+                if last.get("engine") == name == "codex" else [],
+                "recording_held": bool(last.get("recording")) if last.get("engine") == name else False,
+                "etl_needs_consent": [c for c in etl_last.get("needs_consent") or [] if isinstance(c, str)]
+                if name == "codex" else []}
 
     @_safe
     def notices(self, today: date) -> dict:
@@ -1160,6 +1271,19 @@ class Library:
         unseen = [i for i in items if not i.get("seen")]
         return {"unseen": sorted(unseen, key=lambda i: (i.get("date") or "9999", i["found_at"])),
                 "recent": sorted(items, key=lambda i: -i["found_at"])[:30]}
+
+    @_safe
+    def notices_attention(self) -> dict:
+        """The banner line when the reading is on with ChatGPT (Codex) but cannot send (class_notices.attention)."""
+        from lecturehub.index import class_notices
+
+        return class_notices.attention(self.root)
+
+    @_safe
+    def notices_attention_seen(self, key: str) -> dict:
+        from lecturehub.index import class_notices
+
+        return {"changed": class_notices.attention_seen(self.root, str(key or ""))}
 
     @_safe
     def notices_seen(self, keys: list) -> dict:

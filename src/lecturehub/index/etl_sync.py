@@ -8,6 +8,10 @@ never in the course folder or the repository, and is never logged.
 Courses are matched by the timetable (시간표.csv 과목 → 폴더): eTL names look like
 "2026-2 도시계획론 (001)". The file this writes is what ``calendar_events.import_etl`` already reads
 (add / update due date; nothing is deleted). A run at most every ``MIN_INTERVAL_S`` unless forced.
+
+Since 2026-11-25 (D-077) each item also carries my own submission state (``etl_submissions.clean``: state, times,
+missing/late/excused, names and sizes of the handed-in files) and the assignment's allowed file extensions. Scores
+and grades are not kept: the owner chose not to read them.
 """
 from __future__ import annotations
 
@@ -25,6 +29,8 @@ from pathlib import Path
 
 from lecturehub.core import etl_site
 from lecturehub.core.textio import read_text_any
+
+from . import etl_submissions
 
 BASE = etl_site.DEFAULT  # SNU's eTL; the site in use is etl_site.base() (another school's Canvas, 2026-11-20)
 KEYRING_SERVICE, KEYRING_NAME = "lecturehub", "etl-canvas"
@@ -122,14 +128,37 @@ def term_prefix(root: Path) -> str:
     return f"{year}-{found[2]}"
 
 
+_BRACKETS = re.compile(r"\[[^\[\]]{0,80}\]|【[^【】]{0,80}】")
+_PARENS = re.compile(r"\([^()]{0,80}\)|（[^（）]{0,80}）")
+_SECTION_TAIL = re.compile(r"(?:[-_\s]+(?:\d{1,3}|\d{1,3}\s*분반|분반\s*\d{1,3}))$")
+
+
+def _name_key(name: str, parens: bool) -> str:
+    text = _BRACKETS.sub(" ", name)
+    if parens:
+        text = _PARENS.sub(" ", text)
+    text = _SECTION_TAIL.sub("", text.strip())
+    return "".join(text.split()).lower()
+
+
 def match_subject(course_name: str, subjects: dict[str, str]) -> str | None:
-    """The folder of the timetable subject this course name is, or contains (the longest such subject).
-    Other schools' Canvas sites name courses like "[2026-2] 도시계획론-01" or "도시계획론 (Urban Planning)"."""
+    """The folder of the timetable subject this course name IS, for other schools' Canvas sites that name courses like
+    "[2026-2] 도시계획론-01" or "도시계획론 (Urban Planning)": the names are compared without the [term] tag, the
+    section number and spaces (then also without a "(…)" part). Only one subject may fit; a name that merely contains
+    a subject ("응용통계학" for "통계") or fits two subjects stays unmatched, so another course's notices and
+    assignments never land in a folder whose course the user allowed (integration review)."""
     if course_name in subjects:
         return subjects[course_name]
-    squeezed = "".join(course_name.split())
-    inside = [s for s in subjects if len("".join(s.split())) >= 2 and "".join(s.split()) in squeezed]
-    return subjects[max(inside, key=len)] if inside else None
+    for parens in (False, True):
+        key = _name_key(course_name, parens)
+        if len(key) < 2:
+            continue
+        hits = {folder for subject, folder in subjects.items() if _name_key(subject, parens) == key}
+        if len(hits) == 1:
+            return hits.pop()
+        if hits:
+            return None  # two subjects fit: leave it for the user
+    return None
 
 
 def fetch_assignments(root: Path, token: str, fetch: Fetch = _http) -> dict:
@@ -150,12 +179,23 @@ def fetch_assignments(root: Path, token: str, fetch: Fetch = _http) -> dict:
             unmatched.append(subject)
             continue
         courses += 1
-        for item in _all(fetch, f"{site}/api/v1/courses/{course['id']}/assignments?per_page=100&order_by=due_at", token):
+        # include[]=submission (D-077): my own submission state comes with each assignment; etl_submissions.clean
+        # keeps the state, the times, missing/late/excused and the handed-in files' names and sizes — no score or grade
+        url = f"{site}/api/v1/courses/{course['id']}/assignments?per_page=100&order_by=due_at&include[]=submission"
+        for item in _all(fetch, url, token):
             if not item.get("published", True) or not item.get("due_at"):
                 continue
             due = datetime.fromisoformat(str(item["due_at"])).astimezone(KST)
-            items.append({"id": f"etl:{item['id']}", "course": folder, "title": str(item.get("name") or "").strip(),
-                          "due": due.strftime("%Y-%m-%dT%H:%M"), "url": item.get("html_url")})
+            row = {"id": f"etl:{item['id']}", "course": folder, "title": str(item.get("name") or "").strip(),
+                   "due": due.strftime("%Y-%m-%dT%H:%M"), "url": item.get("html_url")}
+            submission = etl_submissions.clean(item.get("submission"))
+            if submission is not None:
+                row["submission"] = submission
+            allowed = [str(x).strip().lower().lstrip(".")[:20] for x in item.get("allowed_extensions") or []
+                       if isinstance(x, str) and x.strip()]
+            if allowed:
+                row["allowed_extensions"] = allowed[:30]
+            items.append(row)
     return {"items": items, "courses": courses, "unmatched": unmatched}
 
 
@@ -201,6 +241,7 @@ def sync(root: Path, *, force: bool = False, fetch: Fetch = _http, token: str | 
                                    "error_at": now})
         return {"state": "error", "error": error}
     _write(Path(root) / "_lecturehub" / "etl" / "assignments.json", found["items"])
+    # with_submission: this list was asked with include[]=submission (D-077) — etl_news compares only from such a fetch
     _write(_state_path(root), {"ok_at": now, "count": len(found["items"]), "courses": found["courses"],
-                               "unmatched": found["unmatched"]})
+                               "unmatched": found["unmatched"], "with_submission": True})
     return {"state": "synced", "count": len(found["items"]), "unmatched": found["unmatched"]}

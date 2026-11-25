@@ -55,7 +55,7 @@ def show_existing(title: str) -> bool:
     if not hwnd:
         return False
     hwnd = ctypes.c_void_p(hwnd)
-    if user32.IsIconic(hwnd):
-        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    if user32.IsIconic(hwnd) or not user32.IsWindowVisible(hwnd):
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE also reveals a D-084 hidden window
     user32.SetForegroundWindow(hwnd)
     return True

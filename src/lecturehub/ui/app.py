@@ -29,12 +29,27 @@ MINI_TITLE = "수업 녹음 · 미니"  # the small window that shows a notice w
 # closing the window while a recording runs: it goes to the taskbar instead (once per recording)
 CLOSE_WHILE_RECORDING = ("녹음 중입니다", "창을 닫지 않고 작업 표시줄로 내렸습니다. 녹음을 끝낸 뒤에 닫을 수 있습니다.")
 CONSENT_UNCONFIRMED = "동의 확인 창을 거치지 않아 동의를 저장하지 않았습니다. 다시 눌러 주세요."
+PERMISSION_UNCONFIRMED = "확인 창을 거치지 않아 녹음 허락을 바꾸지 않았습니다. 다시 눌러 주세요."
 CONSENT_TOKEN_TTL_S = 300
-ASSIGNMENT_PROVIDER = "claude_assignment"  # = index.assignment_pack.PROVIDER (D-050: no index import here)
-CONSENT_TITLES = {"gemini_transcribe": "Google로 녹음을 보낼까요?", ASSIGNMENT_PROVIDER: "과제 도우미 동의",
+# [Codex에 연결] / [Claude 데스크톱에 연결]: what connecting means once "AI 앱이 고칠 수 있게" is on (integration review)
+AI_WRITES_WARNING = ("AI 앱이 일정·정리본을 바꾸려 하면 종류마다 처음에 Lecture Hub가 묻습니다. 자료에 숨은 문장에 AI가 속을 수 "
+                     "있으니 직접 부탁한 변경만 허용하세요. 바뀐 것은 'AI가 바꾼 것'에서 되돌릴 수 있습니다.")
+CODEX_APPROVE_NOTE = " (Codex의 자체 확인 대신 이 창이 묻습니다.)"
+# D-080: turning one kind of AI app change to "자동" in the settings (native dialog, one-time token)
+AI_AUTO_WARNING = ("앞으로 이 종류는 Lecture Hub가 묻지 않고, 연결한 AI 앱이 말하는 대로 바로 바꿉니다. 전사·공지·자료에 숨은 문장이 "
+                   "AI 앱을 속여 바꾸게 할 수도 있습니다. 10분에 30건·하루 200건까지만 바꾸고, 바뀐 것은 'AI가 바꾼 것'에서 되돌릴 수 "
+                   "있으며, 언제든 '묻기'로 되돌릴 수 있습니다.")
+AUTO_UNCONFIRMED = "확인 창을 거치지 않아 '자동'으로 바꾸지 않았습니다. 다시 골라 주세요."
+ALL_KINDS = "*"  # D-080 [모두 자동]: every kind at once, behind one native dialog
+PHOTO_SWITCHES = ("사진으로 시간표를 넣으려면 설정 › AI › AI 앱 연결에서 'AI 앱 연결'과 'AI 앱이 고칠 수 있게'를 먼저 켜 "
+                  "주세요. 켠 뒤 다시 누르세요.")
+CONSENT_TITLES = {"gemini_transcribe": "Google로 녹음을 보낼까요?",
                   "google_live": "Google로 수업 소리를 보낼까요?", "claude_qa": "Anthropic으로 자료 글을 보낼까요?",
                   "whisper_groq": "Groq로 녹음을 보낼까요?", "mai_playground": "Microsoft로 녹음을 보낼까요?",
-                  "codex_note": "OpenAI Codex로 자료 글을 보낼까요?", "claude_note": "Anthropic으로 자료 글을 보낼까요?"}
+                  "codex_note": "OpenAI Codex로 자료 글을 보낼까요?", "claude_note": "Anthropic으로 자료 글을 보낼까요?",
+                  "codex_notices": "OpenAI Codex로 전사 글을 보내 수업 중 공지를 찾을까요?",
+                  "codex_etl_notices": "OpenAI Codex로 eTL 공지를 보내 일정을 찾을까요?",
+                  "ai_app_link": "연결한 AI 앱이 이 과목 자료를 읽게 할까요?"}
 
 
 
@@ -79,6 +94,10 @@ def open_library(root):
 
 def open_room(backend):
     """그스룸 서비스(P-019). 실패해도 녹음은 그대로 쓴다."""
+    from lecturehub.core import edition
+
+    if not edition.has("gsr"):
+        return None
     try:
         from lecturehub.booking.service import RoomService
 
@@ -102,6 +121,37 @@ class Api:
         self._close_told = None  # the recording whose "the window stays open" notification was already shown
         self._side_restore = None  # 옆으로 보기: (was maximized, (x, y, w, h)) to go back to
         self._consent_tokens = {}  # one-time tokens from consent_confirm (security review 2026-11-05)
+        self._material_proc = None  # the material page-text helper while it runs (AI app link, D-072)
+        self._material_started = 0.0  # time.monotonic() when it was started
+        self._material_lock = threading.Lock()
+        self._notice_stop = threading.Event()  # set when the app closes: a running Codex notice request ends
+        self._tray = None
+        self._session_ending = False
+        self._close_prompt = threading.Lock()
+
+    def stay_get(self):
+        from lecturehub.core import startup
+
+        return {"ok": True, "keep_running": startup.close_choice(), "startup": startup.status()}
+
+    def stay_set(self, on):
+        from lecturehub.core import startup
+
+        try:
+            startup.set_close_choice(on)
+            return self.stay_get()
+        except (OSError, ValueError):
+            return {"ok": False, "error": "창을 닫은 뒤 알림 설정을 저장하지 못했습니다."}
+
+    def startup_set(self, on):
+        from lecturehub.core import startup
+
+        return startup.set_enabled(on)
+
+    def startup_settings(self):
+        from lecturehub.core import startup
+
+        return startup.open_settings()
 
     # data
     def init(self):
@@ -118,17 +168,25 @@ class Api:
 
     # 그스룸 saved companions and room order (full build only; backend refuses in public)
     def gsr_companions_get(self):
+        if (off := self._room_off()) is not None:
+            return off
         return self._backend.gsr_companions_get()
 
     def gsr_companions_set(self, text):
+        if (off := self._room_off()) is not None:
+            return off
         if not isinstance(text, (str, list)):
             return {"ok": False, "error": "형식이 맞지 않습니다"}
         return self._backend.gsr_companions_set(text)
 
     def gsr_rooms_get(self):
+        if (off := self._room_off()) is not None:
+            return off
         return self._backend.gsr_rooms_get()
 
     def gsr_rooms_set(self, prefs):
+        if (off := self._room_off()) is not None:
+            return off
         if not isinstance(prefs, dict):
             return {"ok": False, "error": "형식이 맞지 않습니다"}
         return self._backend.gsr_rooms_set(prefs)
@@ -177,13 +235,98 @@ class Api:
 
     # reading class notices out of transcripts (index/class_notices.py): a switch and what it has used
     def notices_setting_get(self):
-        return self._library.notices_setting(_now().date())
+        return self._notices_courses(self._library.notices_setting(_now().date()))
 
     def notices_setting_set(self, on):
-        return self._library.notices_setting(_now().date(), set_to=bool(on))
+        return self._notices_courses(self._library.notices_setting(_now().date(), set_to=bool(on)))
+
+    def notices_engine_set(self, name):
+        """ChatGPT (Codex) or Google for the class-notice reading (D-073). Nothing is sent by choosing."""
+        return self._notices_courses(self._library.notices_setting(_now().date(), engine=str(name or "")))
+
+    def _notices_courses(self, result):
+        """The courses and whether each has the ``codex_notices`` consent (the per-course boxes of the card), and
+        the same for eTL announcements (``codex_etl_notices``, D-077) as ``etl_courses``."""
+        if isinstance(result, dict) and result.get("ok", True) and hasattr(self._backend, "notices_courses"):
+            try:
+                result["courses"] = self._backend.notices_courses()
+            except Exception:  # noqa: BLE001 - the switch stays on screen without the list
+                applog.swallowed("수업 공지 과목 목록")
+                result["courses"] = []
+        if isinstance(result, dict) and result.get("ok", True) and hasattr(self._backend, "etl_notices_courses"):
+            try:
+                result["etl_courses"] = self._backend.etl_notices_courses()
+            except Exception:  # noqa: BLE001 - the switch stays on screen without the list
+                applog.swallowed("eTL 공지 과목 목록")
+                result["etl_courses"] = []
+        return result
+
+    def notices_allow(self, course, token=None):
+        """Store this course's ``codex_notices`` consent: only with the native dialog's one-time token, like every
+        other provider (consent_confirm("codex_notices", course)). Taking it back is consent_revoke."""
+        course = str(course or "")
+        if not self._take_consent_token(token, "codex_notices", course):
+            return {"ok": False, "reason": CONSENT_UNCONFIRMED, "error": CONSENT_UNCONFIRMED, "needs_confirm": True}
+        return self._backend.notices_allow(course)
+
+    def etl_notices_allow(self, course, token=None):
+        """Store this course's ``codex_etl_notices`` consent (eTL announcements to Codex, D-077): only with the
+        native dialog's one-time token (consent_confirm("codex_etl_notices", course)). Taking it back is
+        consent_revoke."""
+        course = str(course or "")
+        if not self._take_consent_token(token, "codex_etl_notices", course):
+            return {"ok": False, "reason": CONSENT_UNCONFIRMED, "error": CONSENT_UNCONFIRMED, "needs_confirm": True}
+        return self._backend.etl_notices_allow(course)
+
+    # eTL notifications (D-077): one switch per kind in settings › 기본 › 알림
+    def etl_notify_get(self):
+        from .library import Library  # the recording path does not import index (D-050)
+
+        return Library.etl_notify()
+
+    def etl_notify_set(self, kind, on):
+        from .library import Library
+
+        return Library.etl_notify(str(kind or ""), bool(on))
+
+    def etl_news_new(self):
+        return self._library.etl_news_new()
+
+    def etl_news_seen(self, keys):
+        return self._library.etl_news_seen(list(keys or []))
 
     def class_reminder_set(self, on):
         return self._backend.class_reminder_set(bool(on))
+
+    def reminders_get(self):
+        from lecturehub.core import reminder_settings as reminders
+
+        prefs = reminders.preferences()
+        return {"ok": True, **prefs, "courses": [{"course": c.folder, "muted": c.folder in prefs["muted_courses"]}
+                                                for c in self._backend.ordered_courses()]}
+
+    def reminders_set(self, changes):
+        from lecturehub.core import reminder_settings as reminders
+
+        try:
+            reminders.set_preferences(dict(changes or {}))
+            return self.reminders_get()
+        except (TypeError, ValueError, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def today_briefing(self):
+        return self._library.today_briefing(_now())
+
+    def week_view(self, offset=0):
+        return self._library.week_view(_now(), offset)
+
+    def _reminder_tick(self, *, clock=None, toast=None):
+        try:
+            if toast is None:
+                from .notify import toast
+            self._library.reminder_tick(clock=clock or _now, toast=toast)
+        except Exception:  # noqa: BLE001 - optional, no recorder access or initialization
+            applog.swallowed("오늘 일정 알림")
 
     # connections (settings screen)
     def conn_status(self, check_login=False):
@@ -294,6 +437,399 @@ class Api:
     def consent_revoke(self, provider, course):
         return self._backend.consent_revoke(str(provider), str(course))
 
+    # AI app link (D-072). Allowing a course stores a consent, so it needs the native dialog's one-time token
+    # (consent_confirm("ai_app_link", course)) like every other provider; taking it back is consent_revoke.
+    def ai_link_status(self):
+        return self._backend.ai_link_status()
+
+    def ai_link_enable(self, on):
+        result = self._backend.ai_link_enable(bool(on))
+        if result.get("ok") and result.get("enabled"):
+            threading.Thread(target=self._material_text_kick, daemon=True).start()
+        return result
+
+    def _material_text_kick(self) -> str:
+        """Start the material page-text helper (materials/background.py) when the AI link is on and some material
+        has no text yet. Never while recording (a running helper is stopped), one at a time (the helper's own lock
+        also counts one started before an app restart), files that gave no text are not retried, and a helper
+        running past ``background.TIMEOUT_S`` is ended. The MCP process itself never parses files: it only reads
+        what this helper stored."""
+        import time
+
+        from lecturehub.core import settings
+        from lecturehub.materials import background
+
+        if self._busy():
+            self._material_stop("녹음 중")
+            return "recording"
+        if not settings.ai_link()["enabled"] or getattr(self._backend, "needs_setup", False):
+            return "off"
+        with self._material_lock:
+            root = Path(self._backend.root)
+            if self._material_proc is not None and self._material_proc.poll() is None:
+                if time.monotonic() - self._material_started < background.TIMEOUT_S:
+                    return "running"
+                try:  # stuck: its marker stays, so that file is given up on the next run
+                    self._material_proc.kill()
+                    self._material_proc.wait(timeout=10)
+                except (OSError, subprocess.TimeoutExpired):
+                    applog.swallowed("자료 글 준비 도우미 끝내기")
+                applog.LOG.warning("자료 글 준비 도우미가 너무 오래 걸려 끝냄")
+                return "stopped"
+            if background.running(root):  # started before this app was restarted
+                info = background.helper_info(root)
+                started = info.get("started_at")
+                if isinstance(started, (int, float)) and time.time() - started > background.TIMEOUT_S \
+                        and isinstance(info.get("pid"), int):
+                    try:  # the lock is held, so this pid is still that helper
+                        os.kill(info["pid"], 9)
+                        applog.LOG.warning("자료 글 준비 도우미(이전 실행)가 너무 오래 걸려 끝냄")
+                    except OSError:
+                        applog.swallowed("자료 글 준비 도우미 끝내기")
+                    return "stopped"
+                return "running"
+            from lecturehub.core import db
+            from lecturehub.core.paths import database_path
+
+            if not database_path(root).is_file():
+                return "nothing"
+            from contextlib import closing
+
+            with closing(db.connect_readonly(database_path(root))) as connection:
+                if not background.pending(connection, root):
+                    return "nothing"
+            from .backend import console_python, spawn
+
+            self._material_proc = spawn([console_python(), "-m", "lecturehub.materials.background", "--root", str(root)],
+                                        stdout=subprocess.DEVNULL, below_normal=True)
+            self._material_started = time.monotonic()
+            applog.LOG.info("자료 글 준비를 뒤에서 시작함(AI 앱 연결)")
+            return "started"
+
+    def _material_stop(self, why: str) -> bool:
+        """End the helper this app started (a recording is starting: AGENTS rule 7). Its pages are committed per
+        file, so only the file in progress is lost, and its marker is cleared: that file was not at fault."""
+        with self._material_lock:
+            proc = self._material_proc
+            if proc is None or proc.poll() is not None:
+                return False
+            try:
+                proc.terminate()
+                proc.wait(timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                applog.swallowed("자료 글 준비 도우미 멈추기")
+            from lecturehub.materials.background import clear_marker
+
+            clear_marker(Path(self._backend.root))
+            applog.LOG.info("자료 글 준비 도우미를 멈춤(%s)", why)
+            return True
+
+    def ai_link_allow(self, course, token=None):
+        course = str(course or "")
+        if not self._take_consent_token(token, "ai_app_link", course):
+            return {"ok": False, "reason": CONSENT_UNCONFIRMED, "error": CONSENT_UNCONFIRMED, "needs_confirm": True}
+        return self._backend.ai_link_allow(course)
+
+    # ---------- D-076: AI apps that change things on the user's word
+    def ai_link_state(self):
+        """The two switches only (cheap): the lecture screen's [ChatGPT로 열기] is off while the link is off."""
+        from lecturehub.core import settings
+
+        return {"ok": True, **settings.ai_link()}
+
+    def ai_link_write(self, on):
+        return self._backend.ai_link_write(bool(on))
+
+    # D-080: per kind "묻기 / 자동". Going to 자동 stores a standing permission, so it needs this native dialog's
+    # one-time token (a script in the page cannot press its buttons); going back to 묻기 needs none.
+    def ai_link_auto_confirm(self, kind):
+        from lecturehub.mcp.approve import KINDS
+
+        kind = str(kind or "")
+        if kind not in KINDS and kind != ALL_KINDS:
+            return {"ok": False, "error": "알 수 없는 종류입니다."}
+        window = self._main
+        if window is None or not hasattr(window, "create_confirmation_dialog"):
+            return {"ok": False, "error": "확인 창을 띄우지 못했습니다."}
+        if kind == ALL_KINDS:  # [모두 자동] (user 2026-11-25): one dialog that names every kind
+            title, named = "모든 종류를 자동으로", "종류: " + ", ".join(KINDS.values())
+        else:
+            title, named = f"'{KINDS[kind]}'을(를) 자동으로", f"종류: {KINDS[kind]}"
+        if not window.create_confirmation_dialog(title, f"{named}\n\n{AI_AUTO_WARNING}"):
+            return {"ok": True, "yes": False}
+        import secrets
+        import time
+
+        token = secrets.token_urlsafe(18)
+        now = time.monotonic()
+        self._consent_tokens = {t: v for t, v in self._consent_tokens.items() if now - v[2] < CONSENT_TOKEN_TTL_S}
+        self._consent_tokens[token] = ("ai_link_auto", kind, now)
+        return {"ok": True, "yes": True, "token": token}
+
+    def ai_link_auto(self, kind, on, token=None):
+        kind = str(kind or "")
+        if on and not self._take_consent_token(token, "ai_link_auto", kind):
+            return {"ok": False, "error": AUTO_UNCONFIRMED, "needs_confirm": True}
+        return self._backend.ai_link_auto(kind, bool(on))
+
+    def ai_link_auto_reset(self):
+        return self._backend.ai_link_auto_reset()
+
+    def ai_change_undo(self, change_id):
+        return self._backend.ai_change_undo(str(change_id or ""))
+
+    def ai_change_undo_since(self, change_id):
+        return self._backend.ai_change_undo_since(str(change_id or ""))
+
+    def ai_link_disconnect(self, app):
+        return self._backend.ai_link_disconnect(str(app or ""))
+
+    def ai_link_connect_confirm(self, app):
+        """[Codex에 연결] / [Claude 데스크톱에 연결]: a native dialog showing the exact text and file; a yes gives a
+        one-time token bound to that text, so the page cannot write another app's settings without the dialog."""
+        from lecturehub.mcp import connect
+
+        app = str(app or "")
+        if app not in connect.APPS:
+            return {"ok": False, "error": "알 수 없는 앱입니다."}
+        window = self._main
+        try:
+            shown = connect.preview(app)
+        except connect.ConfigError as exc:
+            if exc.original and window is not None and hasattr(window, "create_confirmation_dialog"):
+                # the user's own hand-typed entry is shown, not replaced (integration review)
+                window.create_confirmation_dialog("연결하지 않았습니다", str(exc))
+            return {"ok": False, "error": str(exc)}
+        if window is None or not hasattr(window, "create_confirmation_dialog"):
+            return {"ok": False, "error": "확인 창을 띄우지 못했습니다."}
+        # short on purpose (user 2026-11-25 "사족이 길다"): the file, how to undo, one line on AI changes
+        try:  # the program the AI app will start, in plain form (the full block stays out: user 2026-11-25)
+            started = connect.entry()
+            program = " ".join([str(started.get("command") or ""), *map(str, started.get("args") or [])]).strip()
+        except Exception:  # noqa: BLE001 - the line is only shown, the write itself checks again
+            program = ""
+        message = (f"{shown['label']} 설정에 Lecture Hub를 연결할까요?\n\n파일: {shown['path']}\n"
+                   + (f"실행할 프로그램: {program}\n" if program else "")
+                   + "원래 파일은 .lecturehub-bak으로 남고, [연결 해제]로 이 부분만 지웁니다. 연결한 뒤 그 앱을 다시 시작하세요.\n\n"
+                   + AI_WRITES_WARNING + (CODEX_APPROVE_NOTE if app == "codex" else ""))
+        if not window.create_confirmation_dialog(f"{shown['label']}에 연결", message):
+            return {"ok": True, "yes": False}
+        import secrets
+        import time
+
+        token = secrets.token_urlsafe(18)
+        now = time.monotonic()
+        self._consent_tokens = {t: v for t, v in self._consent_tokens.items() if now - v[2] < CONSENT_TOKEN_TTL_S}
+        self._consent_tokens[token] = (f"app_config:{app}", shown["digest"], now)
+        return {"ok": True, "yes": True, "token": token}
+
+    def ai_link_connect(self, app, token=None):
+        from lecturehub.mcp import connect
+
+        app = str(app or "")
+        try:
+            digest = connect.preview(app)["digest"] if app in connect.APPS else ""
+        except connect.ConfigError as exc:
+            return {"ok": False, "error": str(exc)}
+        if not digest or not self._take_consent_token(token, f"app_config:{app}", digest):
+            return {"ok": False, "error": CONSENT_UNCONFIRMED, "needs_confirm": True}
+        return self._backend.ai_link_connect(app)
+
+    def ai_link_open_codex(self, lecture_id=None):
+        """[ChatGPT(Codex)로 열기]: the user's Codex in a console, with the lecturehub server set for this run only
+        (``-c mcp_servers.lecturehub.*``; ~/.codex/config.toml is not touched). No chat window of our own."""
+        from lecturehub.core import settings
+
+        if not settings.ai_link()["enabled"]:
+            return {"ok": False, "error": "AI 앱 연결이 꺼져 있습니다. 설정 › AI › AI 앱 연결에서 켜 주세요."}
+        try:
+            from lecturehub.mcp import connect
+
+            connect.open_codex(str(lecture_id) if lecture_id else None, launcher=getattr(self, "_codex_launcher", None))
+        except (FileNotFoundError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        except OSError:
+            applog.swallowed("Codex 열기")
+            return {"ok": False, "error": "Codex를 열지 못했습니다."}
+        return {"ok": True}
+
+    # D-083 [사진으로 시간표 넣기 (ChatGPT·Codex)]: one picture, a native file picker, a native confirmation naming the
+    # file and where it goes, then the user's Codex with the picture attached. The page cannot skip the dialog: the
+    # second step needs its one-time token, bound to that file.
+    def timetable_photo_confirm(self):
+        from lecturehub.core import settings
+        from lecturehub.mcp import connect
+
+        state = settings.ai_link()
+        if not (state["enabled"] and state["write"]):
+            return {"ok": False, "error": PHOTO_SWITCHES}
+        from lecturehub.ai.codex import CodexEngine
+
+        if not CodexEngine().available():
+            return {"ok": False, "error": "Codex(ChatGPT)가 이 PC에 없습니다. 설정 › 연결 › 프로그램의 설치 안내를 보세요."}
+        window = self._main
+        if window is None or not hasattr(window, "create_confirmation_dialog") or not hasattr(window, "create_file_dialog"):
+            return {"ok": False, "error": "확인 창을 띄우지 못했습니다."}
+        import webview
+
+        picked = window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=False,
+                                           file_types=("그림 (*.png;*.jpg;*.jpeg;*.webp)",))
+        if not picked:
+            return {"ok": True, "yes": False}
+        path = Path(str(picked[0] if isinstance(picked, (list, tuple)) else picked))
+        problem = connect.photo_problem(path)
+        if problem:
+            return {"ok": False, "error": problem}
+        try:  # review L4: copied now; the dialog names this copy's size and the launch sends exactly these bytes
+            copy, digest, size = connect.stage_photo(path)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        except OSError:
+            applog.swallowed("사진으로 시간표 넣기: 사본")
+            return {"ok": False, "error": "그림 파일을 읽지 못했습니다."}
+        message = (f"파일: {path.name} ({max(1, size // 1024):,}KB)\n\n"
+                   "이 사진을 이 PC의 Codex(ChatGPT)에 붙여 엽니다. 사진은 내 Codex 로그인으로 OpenAI에 보내지고, 그 처리는 "
+                   "OpenAI와 내 계정의 약관을 따릅니다. Codex가 읽은 시간표를 먼저 보여 주면 확인한 뒤 넣으라고 하세요. "
+                   "'시간표 바꾸기'를 자동으로 두지 않았다면 넣을 때 Lecture Hub가 바뀌는 내용을 보여 주고 다시 묻습니다"
+                   "(과목을 빼는 변경은 자동이어도 묻습니다). 사본은 앱의 Codex 작업 폴더에 하루 동안 남았다가 지워집니다.")
+        if not window.create_confirmation_dialog("사진으로 시간표 넣기", message):
+            copy.unlink(missing_ok=True)
+            return {"ok": True, "yes": False}
+        import secrets
+        import time
+
+        token = secrets.token_urlsafe(18)
+        now = time.monotonic()
+        self._consent_tokens = {t: v for t, v in self._consent_tokens.items() if now - v[2] < CONSENT_TOKEN_TTL_S}
+        self._consent_tokens[token] = ("timetable_photo", f"{digest}|{copy}", now)
+        return {"ok": True, "yes": True, "token": token, "name": path.name}
+
+    def timetable_photo_open(self, token=None):
+        from lecturehub.core import settings
+        from lecturehub.mcp import connect
+
+        entry = self._consent_tokens.get(str(token)) if token else None
+        bound = entry[1] if entry and entry[0] == "timetable_photo" else ""
+        if not bound or not self._take_consent_token(token, "timetable_photo", bound):
+            return {"ok": False, "error": CONSENT_UNCONFIRMED, "needs_confirm": True}
+        digest, _, name = bound.partition("|")
+        state = settings.ai_link()  # turned off since the dialog: nothing is opened, the copy goes
+        if not (state["enabled"] and state["write"]):
+            Path(name).unlink(missing_ok=True)
+            return {"ok": False, "error": PHOTO_SWITCHES}
+        try:  # the copy made at the confirmation, still those bytes (sha256 bound into the token, review L4)
+            connect.open_codex_photo(Path(name), sha256=digest, launcher=getattr(self, "_codex_launcher", None),
+                                     popen=getattr(self, "_codex_popen", None))
+        except (FileNotFoundError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        except OSError:
+            applog.swallowed("사진으로 시간표 넣기")
+            return {"ok": False, "error": "Codex를 열지 못했습니다."}
+        applog.LOG.info("사진으로 시간표 넣기: Codex를 엶")
+        return {"ok": True}
+
+    # ---------- D-086: the first-run wizard's step "ChatGPT(Codex) 연결". One native dialog names the three things one
+    # button turns on (the Codex config entry, the AI app link, the write switch); a yes gives a one-time token bound
+    # to the config text it showed, so page script cannot turn any of them on. No course is allowed here.
+    def setup_codex_state(self, check_login=False):
+        """Codex found / signed in (as settings › 연결 shows it), its config entry and the two switches."""
+        from lecturehub.core import settings, tools
+        from lecturehub.mcp import connect
+
+        row = tools.status(check_login=bool(check_login)).get("codex") or {}
+        tool = {k: row.get(k) for k in ("label", "found", "signed_in", "hint", "help_url")}
+        return {"ok": True, "tool": tool, "config": connect.status("codex"), **settings.ai_link(),
+                "folder": bool(getattr(self._backend, "setup_root", None))}
+
+    def _setup_connect_message(self, shown: dict) -> str:
+        from lecturehub.core import settings
+        from lecturehub.mcp import connect
+
+        try:  # the program the AI app will start, in plain form
+            started = connect.entry()
+            program = " ".join([str(started.get("command") or ""), *map(str, started.get("args") or [])]).strip()
+        except Exception:  # noqa: BLE001 - the line is only shown, the write itself checks again
+            program = ""
+        auto = [kind for kind, on in settings.ai_link_auto().items() if on]
+        asks = ("바꿀 때마다 Lecture Hub가 화면에 바뀌는 내용을 보여 주고 묻습니다. 지금 모든 종류가 '묻기'입니다."
+                if not auto else f"'묻기'인 종류는 바꿀 때마다 Lecture Hub가 화면에 묻습니다. 이미 '자동'으로 둔 종류 {len(auto)}개는 "
+                                 "묻지 않습니다.")
+        return ("이 PC의 Codex(ChatGPT)에 Lecture Hub를 연결합니다. 다음 세 가지를 켭니다.\n\n"
+                f"1. Codex 설정 파일에 Lecture Hub 항목 넣기\n   파일: {shown['path']}\n"
+                + (f"   실행할 프로그램: {program}\n" if program else "")
+                + "   원래 파일은 .lecturehub-bak으로 남습니다.\n"
+                "2. AI 앱 연결: 켬\n3. AI 앱이 고칠 수 있게: 켬\n\n"
+                f"Codex가 시간표·일정·알림 설정을 바꾸려 하면 {asks} Codex 자체의 확인 대신 이 창이 묻습니다. "
+                "자료에 숨은 문장에 AI가 속을 수 있으니 직접 부탁한 변경만 허용하세요.\n"
+                "과목 자료를 AI 앱이 읽게 하는 허용은 켜지 않습니다. 과목마다 설정 › AI › AI 앱 연결에서 따로 허용합니다.\n\n"
+                "끄려면 설정 › AI › AI 앱 연결에서 스위치를 끄거나 [연결 해제]를 누르세요.")
+
+    def ai_link_setup_confirm(self):
+        from lecturehub.mcp import connect
+
+        window = self._main
+        try:
+            shown = connect.preview("codex")
+        except connect.ConfigError as exc:
+            if exc.original and window is not None and hasattr(window, "create_confirmation_dialog"):
+                window.create_confirmation_dialog("연결하지 않았습니다", str(exc))
+            return {"ok": False, "error": str(exc)}
+        if window is None or not hasattr(window, "create_confirmation_dialog"):
+            return {"ok": False, "error": "확인 창을 띄우지 못했습니다."}
+        if not window.create_confirmation_dialog("Codex에 연결 (처음 설정)", self._setup_connect_message(shown)):
+            return {"ok": True, "yes": False}
+        import secrets
+        import time
+
+        token = secrets.token_urlsafe(18)
+        now = time.monotonic()
+        self._consent_tokens = {t: v for t, v in self._consent_tokens.items() if now - v[2] < CONSENT_TOKEN_TTL_S}
+        self._consent_tokens[token] = ("ai_link_setup", shown["digest"], now)
+        return {"ok": True, "yes": True, "token": token}
+
+    def ai_link_setup_connect(self, token=None):
+        """After the dialog: the config entry first; only when it is written are the two switches turned on."""
+        from lecturehub.core import settings
+        from lecturehub.mcp import connect
+
+        try:
+            digest = connect.preview("codex")["digest"]
+        except connect.ConfigError as exc:
+            return {"ok": False, "error": str(exc)}
+        if not self._take_consent_token(token, "ai_link_setup", digest):
+            return {"ok": False, "error": CONSENT_UNCONFIRMED, "needs_confirm": True}
+        try:
+            state = connect.connect_codex()
+        except connect.ConfigError as exc:
+            return {"ok": False, "error": str(exc)}
+        settings.set_ai_link(True)
+        switches = settings.set_ai_link_write(True)
+        applog.LOG.info("AI 앱 연결: 처음 설정에서 Codex 설정에 넣고 연결·고치기를 켬")
+        return {"ok": True, "config": state, **switches}
+
+    def setup_codex_open(self):
+        """[Codex로 처음 설정하기]: the user's Codex with the first-setup skill (D-086). Nothing is sent until the user
+        answers in that window; the timetable lands through set_timetable and its own confirmation dialog."""
+        from lecturehub.core import settings
+
+        state = settings.ai_link()
+        if not (state["enabled"] and state["write"]):
+            return {"ok": False, "error": "먼저 [Codex에 연결]을 누르세요. 연결하면 이 버튼을 쓸 수 있습니다."}
+        if getattr(self._backend, "setup_root", None) is None and getattr(self._backend, "needs_setup", False):
+            return {"ok": False, "error": "학기 폴더를 먼저 만들어야 합니다."}
+        try:
+            from lecturehub.mcp import connect
+
+            connect.open_codex_setup(launcher=getattr(self, "_codex_launcher", None),
+                                     popen=getattr(self, "_codex_popen", None))
+        except (FileNotFoundError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        except OSError:
+            applog.swallowed("Codex로 처음 설정하기")
+            return {"ok": False, "error": "Codex를 열지 못했습니다."}
+        applog.LOG.info("Codex로 처음 설정하기: Codex를 엶")
+        return {"ok": True}
+
     def report_plan(self):
         from lecturehub.core import diagnostics, settings
 
@@ -350,12 +886,19 @@ class Api:
 
         return {"ok": True, "path": path, "notes": setup.folder_notes(path)}
 
-    def setup_apply(self, parent, term, courses, term_start="", term_end="", layout=""):
+    def setup_apply(self, parent, term, courses, term_start="", term_end="", layout="", base=""):
         return self._backend.setup_apply(parent, term, courses, str(term_start or ""), str(term_end or ""),
-                                         str(layout or ""))
+                                         str(layout or ""), str(base or "") or None)
+
+    def setup_prepare(self, parent, term, layout=""):
+        return self._backend.setup_prepare(str(parent or ""), str(term or ""), str(layout or ""))
+
+    def setup_timetable(self):
+        return self._backend.setup_timetable()
 
     def setup_close(self):
         self._quitting = True
+        self._notice_stop.set()
         for win in (self._mini, self._main):
             try:
                 if win:
@@ -372,7 +915,25 @@ class Api:
         return {"course": self._backend.suggest_course()}
 
     def start(self, course, mode="mic", device_name=None, course_source="unknown", with_pc=False):
-        return self._backend.start(course, mode, device_name, course_source, bool(with_pc))
+        try:
+            return self._backend.start(course, mode, device_name, course_source, bool(with_pc))
+        finally:
+            self._material_stop_later("녹음 시작")
+
+    def _material_stop_later(self, why: str) -> None:
+        """Stop the material text helper from a daemon thread (AGENTS rule 7, review H3) — never on the path that
+        starts a recording, which nothing may delay (D-050): ``_material_stop`` takes a lock and waits for the
+        process. Any failure here stays in the log."""
+        def stop():
+            try:
+                self._material_stop(why)
+            except Exception:  # noqa: BLE001 - the helper also stops itself when it sees the recording
+                applog.swallowed("자료 글 준비 도우미 멈추기")
+
+        try:
+            threading.Thread(target=stop, name="material-stop", daemon=True).start()
+        except Exception:  # noqa: BLE001 - never affects the recording
+            applog.swallowed("자료 글 준비 도우미 멈추기")
 
     def recording_permissions(self):
         return self._backend.recording_permissions()
@@ -392,7 +953,10 @@ class Api:
         if permission.get("warning") and (
                 not self._main or not self._main.create_confirmation_dialog("녹음 허락 확인", permission["warning"])):
             return {"ok": False, "reason": "녹음 허락을 확인한 뒤 시작하세요."}
-        return self._backend.start_selected()
+        try:
+            return self._backend.start_selected()
+        finally:
+            self._material_stop_later("녹음 시작")
 
     def discard_recording(self):
         return self._backend.discard()
@@ -439,7 +1003,7 @@ class Api:
     def consent_confirm(self, provider, course):
         provider, course = str(provider or ""), str(course or "")
         notice = self._consent_notice(provider)
-        if notice is None or not course:
+        if notice is None or not course or "\x00" in course:  # NUL: the key shape of a several-course token
             return {"ok": False, "error": "알 수 없는 동의 요청입니다."}
         window = self._main
         if window is None or not hasattr(window, "create_confirmation_dialog"):
@@ -464,12 +1028,10 @@ class Api:
         from lecturehub.core import edition
         from lecturehub.transcription.consent import NOTICES
 
-        feature = {ASSIGNMENT_PROVIDER: "assignment", "claude_qa": "qa", "mai_playground": "mai"}.get(provider)
+        feature = {"claude_qa": "qa", "mai_playground": "mai"}.get(provider)
         if feature and not edition.has(feature):
             return None
-        if provider == ASSIGNMENT_PROVIDER and self._library is not None:
-            return self._library.assignment_notice()
-        return NOTICES.get(provider)
+        return NOTICES.get(provider)  # an unknown provider (e.g. the removed assignment helper's) gets None
 
     def _take_consent_token(self, token, provider, course) -> bool:
         import time
@@ -477,6 +1039,118 @@ class Api:
         entry = self._consent_tokens.pop(str(token), None) if token else None
         return bool(entry and entry[0] == provider and entry[1] == (course or "")
                     and time.monotonic() - entry[2] < CONSENT_TOKEN_TTL_S)
+
+    # ---------- several courses in one confirmation ([모두 선택] of the per-course cards, user 2026-11-25).
+    # One native dialog names every course; the consent is still stored per course, for those courses only.
+    # It is not a standing consent: a course added later is asked again. Only the text-only, per-course providers
+    # whose cards have the button take it (eTL announcements since D-077); audio providers keep one dialog per course.
+    MANY_PROVIDERS = ("ai_app_link", "codex_notices", "codex_etl_notices")
+    MANY_MAX = 200
+
+    @staticmethod
+    def _course_names(courses) -> list[str]:
+        """The distinct course names of a list from the page, in order; [] when it is not a plain list of names."""
+        if not isinstance(courses, (list, tuple)) or not courses or len(courses) > Api.MANY_MAX:
+            return []
+        names = []
+        for course in courses:
+            if not isinstance(course, str) or not course or "\x00" in course:
+                return []
+            if course not in names:
+                names.append(course)
+        return names
+
+    @staticmethod
+    def _many_key(names) -> str:
+        """What a several-course token is bound to. Starts with NUL, so it never equals a course name: the token
+        of a list cannot store one course, another list, or a list with one more course in it."""
+        return "\x00many\x00" + "\x00".join(sorted(names))
+
+    def consent_confirm_many(self, provider, courses):
+        from lecturehub.transcription.consent import named
+
+        provider, names = str(provider or ""), self._course_names(courses)
+        notice = self._consent_notice(provider) if provider in self.MANY_PROVIDERS else None
+        if notice is None or not names or not all(named(name) for name in names):
+            return {"ok": False, "error": "알 수 없는 동의 요청입니다."}
+        window = self._main
+        if window is None or not hasattr(window, "create_confirmation_dialog"):
+            return {"ok": False, "error": "동의 확인 창을 띄우지 못했습니다."}
+        title = CONSENT_TITLES.get(provider, "동의")
+        listed = "\n".join(f"· {name}" for name in names)
+        message = (f"{notice}\n\n과목 {len(names)}개:\n{listed}\n"
+                   "이 제공자와 여기 적힌 과목에만 적용합니다. 나중에 생기는 과목은 그때 다시 묻습니다.")
+        if not window.create_confirmation_dialog(f"과목 {len(names)}개 · {title}", message):
+            return {"ok": True, "yes": False}
+        import secrets
+        import time
+
+        token = secrets.token_urlsafe(18)
+        now = time.monotonic()
+        self._consent_tokens = {t: v for t, v in self._consent_tokens.items() if now - v[2] < CONSENT_TOKEN_TTL_S}
+        self._consent_tokens[token] = (provider, self._many_key(names), now)
+        return {"ok": True, "yes": True, "token": token}
+
+    def _allow_many(self, provider, courses, token, store):
+        names = self._course_names(courses)
+        if not names or not self._take_consent_token(token, provider, self._many_key(names)):
+            return {"ok": False, "reason": CONSENT_UNCONFIRMED, "error": CONSENT_UNCONFIRMED, "needs_confirm": True}
+        return store(names)
+
+    def ai_link_allow_all(self, courses, token=None):
+        """Store the AI app link consent of every listed course: only with the token of the one dialog that named
+        exactly these courses (consent_confirm_many)."""
+        return self._allow_many("ai_app_link", courses, token, self._backend.ai_link_allow_many)
+
+    def notices_allow_all(self, courses, token=None):
+        return self._allow_many("codex_notices", courses, token, self._backend.notices_allow_many)
+
+    def etl_notices_allow_all(self, courses, token=None):
+        return self._allow_many("codex_etl_notices", courses, token, self._backend.etl_notices_allow_many)
+
+    # ---------- every course's recording permission at once (settings › 녹음·전사, user 2026-11-25). Setting all to
+    # 허락함 or 강의계획서 허용 is the user stating that every lecturer allowed recording: one native dialog names the
+    # courses and repeats the warning, and only its one-time token (bound to that state and that list) stores it.
+    # 아직 확인 안 함 / 금지 only narrow what may be recorded and need no dialog.
+    def recording_permission_confirm_many(self, state, courses):
+        from lecturehub.core import recording_permission as permission
+
+        state, names = str(state or ""), self._course_names(courses)
+        if state not in permission.CONFIRM_STATES or not names:
+            return {"ok": False, "error": "알 수 없는 요청입니다."}
+        window = self._main
+        if window is None or not hasattr(window, "create_confirmation_dialog"):
+            return {"ok": False, "error": "확인 창을 띄우지 못했습니다."}
+        title = f"과목 {len(names)}개 · 녹음 허락을 '{permission.STATES[state]}'(으)로"
+        if not window.create_confirmation_dialog(title, permission.bulk_message(state, names)):
+            return {"ok": True, "yes": False}
+        import secrets
+        import time
+
+        token = secrets.token_urlsafe(18)
+        now = time.monotonic()
+        self._consent_tokens = {t: v for t, v in self._consent_tokens.items() if now - v[2] < CONSENT_TOKEN_TTL_S}
+        self._consent_tokens[token] = ("recording_permission:" + state, self._many_key(names), now)
+        return {"ok": True, "yes": True, "token": token}
+
+    def recording_permission_all(self, state, courses, token=None):
+        from lecturehub.core import recording_permission as permission
+
+        state, names = str(state or ""), self._course_names(courses)
+        if state not in permission.STATES or not names:
+            return {"ok": False, "error": "알 수 없는 요청입니다."}
+        if state in permission.CONFIRM_STATES and not self._take_consent_token(
+                token, "recording_permission:" + state, self._many_key(names)):
+            return {"ok": False, "reason": PERMISSION_UNCONFIRMED, "error": PERMISSION_UNCONFIRMED, "needs_confirm": True}
+        return self._backend.recording_permission_many(names, state)
+
+    def consent_revoke_many(self, provider, courses):
+        """[모두 해제]: take back several stored consents of one of the two per-course cards. No dialog: it only
+        narrows what may be handed over."""
+        names = self._course_names(courses)
+        if str(provider or "") not in self.MANY_PROVIDERS or not names:
+            return {"ok": False, "error": "알 수 없는 요청입니다."}
+        return self._backend.consent_revoke_many(str(provider), names)
 
     def relink(self, media_id, course, day, with_transcripts=False):
         if self._busy():
@@ -897,6 +1571,7 @@ class Api:
                 refreshed = self._library.calendar_refresh()  # eTL deadlines + notices heard in class (candidates)
                 self._announce((refreshed or {}).get("notices"))
                 self._tell_board((refreshed or {}).get("board_new"))
+                self._etl_news()
             if not self._busy() and hasattr(self._library, "audio_cleanup"):
                 self._library.audio_cleanup()  # recordings whose Google transcript is N days old → Recycle Bin
             if not self._busy() and hasattr(self._library, "prewarm"):
@@ -924,18 +1599,30 @@ class Api:
     def notices_seen(self, keys):
         return self._library.notices_seen(list(keys or []))
 
+    def notices_attention(self):
+        """Class notices on with ChatGPT (Codex) but something keeps them from going out (D-075): said once per
+        state in the banner, with a button to the settings group."""
+        return self._library.notices_attention()
+
+    def notices_attention_seen(self, key):
+        return self._library.notices_attention_seen(str(key or ""))
+
     def _announce(self, result):
         """New notices: Windows notification + taskbar flash + the page's banner."""
-        added = [item for item in (result or {}).get("added") or [] if not item.get("seen")]
+        from lecturehub.core.reminder_settings import audible
+
+        added = audible([item for item in (result or {}).get("added") or [] if not item.get("seen")])
         if not added:
             return
         def line(item):
             when = f"{item['date'][5:].replace('-', '/')}" if item.get("date") else "날짜 미정"
             return f"{item['course']} {when} {item['kind_label']}: {item['summary']}"
+        written = sum(1 for item in added if item.get("source") == "etl")  # found in eTL announcements (D-077)
+        what = "eTL 공지에서 찾은 일정" if written == len(added) else "수업 중 공지" if not written else "수업·eTL 공지"
         try:
             from .notify import toast
 
-            toast(f"수업 중 공지 {len(added)}건 — 확인해 주세요", "\n".join(line(i) for i in added[:3]),
+            toast(f"{what} {len(added)}건 — 확인해 주세요", "\n".join(line(i) for i in added[:3]),
                   icon=str(ICON) if ICON.exists() else None)
         except Exception:  # noqa: BLE001 - the banner below still shows it
             applog.swallowed("수업 공지 Windows 알림")
@@ -948,6 +1635,9 @@ class Api:
     def _tell_board(self, posts):
         """New eTL board posts, with or without files (user 2026-11-20): what was posted, by a Windows
         notification, and the page's banner (it shows the text until 확인함)."""
+        from lecturehub.core.reminder_settings import audible
+
+        posts = audible(posts or [])
         if not posts:
             return
         def line(post):
@@ -966,6 +1656,45 @@ class Api:
         except Exception:  # noqa: BLE001 - the page reads the list when it opens
             applog.swallowed("게시판 새 글 화면 갱신")
 
+    def _etl_news(self):
+        """eTL news since the last look (index/etl_news.py, D-077): a new assignment, a changed due date, new course
+        files, a submission whose files look wrong. Not while a recording runs, like the other notices: they stay
+        in the stored lists and are told after it. Never raises."""
+        try:
+            if self._busy() or not hasattr(self._library, "etl_news_collect"):
+                return
+            self._tell_etl(self._library.etl_news_collect())
+        except Exception:  # noqa: BLE001 - tried again next round
+            applog.swallowed("eTL 새 소식")
+
+    def _tell_etl(self, news):
+        """Windows notification + taskbar flash + the page's banner, the path of the other notices."""
+        from lecturehub.core.reminder_settings import audible
+
+        news = audible(news or [])
+        if not news:
+            return
+        kinds = {n.get("kind") for n in news}
+        if len(news) == 1:
+            title = {"assignment_new": "eTL 새 과제", "due_changed": "eTL 과제 마감이 바뀌었습니다",
+                     "files_new": "eTL에 새 강의자료", "submit_check": "제출한 파일을 확인해 주세요"}.get(news[0].get("kind"),
+                                                                                          "eTL 새 소식")
+        elif kinds == {"submit_check"}:
+            title = f"제출한 파일을 확인해 주세요 ({len(news)}건)"
+        else:
+            title = f"eTL 새 소식 {len(news)}건"
+        try:
+            from .notify import toast
+
+            toast(title, "\n".join(str(n.get("line") or n.get("title") or "") for n in news[:3]), icon=str(ICON) if ICON.exists() else None)
+        except Exception:  # noqa: BLE001 - the banner below still shows it
+            applog.swallowed("eTL 새 소식 Windows 알림")
+        try:
+            if self._main is not None:
+                self._main.evaluate_js("window.__lecturehubNotices && window.__lecturehubNotices()")
+        except Exception:  # noqa: BLE001 - the page reads the list when it opens
+            applog.swallowed("eTL 새 소식 화면 갱신")
+
     def etl_board_new(self):
         return self._library.etl_board_new()
 
@@ -973,22 +1702,68 @@ class Api:
         return self._library.etl_board_seen(list(ids or []))
 
     def _notice_loop(self, every_seconds=600):
-        """Every 10 minutes: read lectures whose transcripts changed (network only, so it runs while recording),
-        and once a day the eTL course boards (not while recording, AGENTS §2.7)."""
+        """D-079: check local reminders each minute; start a notice scan every ten minutes.
+
+        A slow AI/network scan must not hold up reminders. Only one scan can run
+        at once; its existing busy/stop gates still apply (D-050, D-073).
+        """
         import time
 
-        time.sleep(30)  # after start-up (the calendar refresh reads once too)
+        if self._notice_stop.wait(30):  # after start-up (the calendar refresh reads once too)
+            return
+        worker, next_scan = None, 0.0
         while not self._quitting:
-            try:
-                self._announce(self._library.notices_scan(_now().date()))
-            except Exception:  # noqa: BLE001 - tried again next round
-                applog.swallowed("수업 공지 읽기")
-            try:
-                if not self._busy() and hasattr(self._library, "etl_board_auto"):
-                    self._tell_board(self._library.etl_board_auto())
-            except Exception:  # noqa: BLE001 - tried again next round
-                applog.swallowed("게시판 읽기")
-            time.sleep(every_seconds)
+            self._reminder_tick()  # D-079: local stored lists only, also while recording
+            if time.monotonic() >= next_scan and (worker is None or not worker.is_alive()):
+                worker = threading.Thread(target=self._notice_round, daemon=True)
+                worker.start()
+                next_scan = time.monotonic() + max(1, every_seconds)
+            elif (worker is None or not worker.is_alive()) and self._rescan_waiting():
+                # D-083: a lecture an AI app asked to read again is picked up within the minute, not the ten
+                worker = threading.Thread(target=self._rescan_round, daemon=True)
+                worker.start()
+            if self._notice_stop.wait(min(60, max(1, every_seconds))):
+                return
+
+    def _rescan_waiting(self) -> bool:
+        """D-083: an AI app left a ``request_notice_rescan`` request and nothing is recording (files only)."""
+        try:
+            from lecturehub.mcp import rescan_queue
+
+            return (not self._busy() and hasattr(self._library, "notices_requested")
+                    and bool(rescan_queue.pending(self._library.root)))
+        except Exception:  # noqa: BLE001 - looked at again next minute
+            applog.swallowed("AI 앱 다시 찾기 요청 확인")
+            return False
+
+    def _rescan_round(self):
+        """D-083: read the requested lectures with the app's own engine and consent; findings are told like any."""
+        try:
+            self._announce(self._library.notices_requested(_now().date(), busy=self._busy, stop=self._notice_stop))
+        except Exception:  # noqa: BLE001 - the request stays and is tried next minute
+            applog.swallowed("AI 앱 다시 찾기 요청 읽기")
+
+    def _notice_round(self):
+        """Existing class/eTL scan; optional AI/network work stays outside the minute timer."""
+        try:
+            self._announce(self._library.notices_scan(_now().date(), busy=self._busy, stop=self._notice_stop))
+        except Exception:  # noqa: BLE001 - tried again next round
+            applog.swallowed("수업 공지 읽기")
+        try:
+            if not self._busy() and hasattr(self._library, "etl_board_auto"):
+                self._tell_board(self._library.etl_board_auto())
+        except Exception:  # noqa: BLE001 - tried again next round
+            applog.swallowed("게시판 읽기")
+        try:  # eTL lists when due; not while recording
+            if not self._busy() and hasattr(self._library, "etl_auto"):
+                self._library.etl_auto()
+                self._etl_news()
+        except Exception:  # noqa: BLE001 - tried again next round
+            applog.swallowed("eTL 목록 읽기")
+        try:
+            self._material_text_kick()
+        except Exception:  # noqa: BLE001 - tried again next round
+            applog.swallowed("자료 글 준비")
 
     def _clova_loop(self, every_seconds=3600):
         """Weekly Clova check while the app is open (P-039, 사용자 결정 2026-11-06): looks every hour whether a
@@ -1063,7 +1838,10 @@ class Api:
         return self._library.etl_status()
 
     def etl_sync(self, force=False, token=None):
-        return self._library.etl_sync(force, token)
+        result = self._library.etl_sync(force, token)
+        if isinstance(result, dict) and result.get("ok", True) and result.get("state") == "synced":
+            self._etl_news()  # what [지금 가져오기] brought is told like the automatic fetch (not while recording)
+        return result
 
     def etl_board(self):
         return self._library.etl_board()
@@ -1086,38 +1864,6 @@ class Api:
     def etl_file_keep(self, file_id):
         return self._library.etl_file_keep(file_id)
 
-    def assignment_prepare(self, event_id):
-        from lecturehub.core import edition
-
-        if not edition.has("assignment"):
-            return {"ok": False, "error": "공개판에 포함되지 않은 기능입니다.", "reason": "공개판에 포함되지 않은 기능입니다.", "state": "disabled", "running": False}
-        if self._busy():  # reading PDFs/HWP is kept away from a running recording (AGENTS §2.7)
-            return {"ok": False, "error": "녹음 중에는 과제 자료를 모으지 않습니다. 녹음이 끝난 뒤 눌러 주세요."}
-        return self._library.assignment_prepare(event_id)
-
-    def assignment_consent(self, course, token=None):
-        from lecturehub.core import edition
-
-        if not edition.has("assignment"):
-            return {"ok": False, "error": "공개판에 포함되지 않은 기능입니다.", "reason": "공개판에 포함되지 않은 기능입니다.", "state": "disabled", "running": False}
-        if not self._take_consent_token(token, ASSIGNMENT_PROVIDER, str(course or "")):
-            return {"ok": False, "error": CONSENT_UNCONFIRMED}
-        return self._library.assignment_consent(course)
-
-    def assignment_open(self, event_id):
-        from lecturehub.core import edition
-
-        if not edition.has("assignment"):
-            return {"ok": False, "error": "공개판에 포함되지 않은 기능입니다.", "reason": "공개판에 포함되지 않은 기능입니다.", "state": "disabled", "running": False}
-        return self._library.assignment_open(event_id)
-
-    def assignment_claude(self, event_id):
-        from lecturehub.core import edition
-
-        if not edition.has("assignment"):
-            return {"ok": False, "error": "공개판에 포함되지 않은 기능입니다.", "reason": "공개판에 포함되지 않은 기능입니다.", "state": "disabled", "running": False}
-        return self._library.assignment_claude(event_id)
-
     def note_claude(self, lecture_id, token=None):
         if self._busy():  # the note session renders slides: not next to a recording (AGENTS §2.7)
             return {"ok": False, "error": "녹음 중에는 정리본을 만들지 않습니다. 녹음이 끝난 뒤 다시 누르세요."}
@@ -1126,14 +1872,26 @@ class Api:
             return auth
         return self._library.note_claude(lecture_id, consent_provider=auth["provider"])
     # 그스룸 (P-019): Claude in Chrome 외부 어댑터(D-003)로 예약·반납. 네트워크 작업이라 녹음 중에도 허용
+    @staticmethod
+    def _room_off():
+        from lecturehub.core import edition
+
+        return None if edition.has("gsr") else {"ok": False, "state": "disabled", "error": "공개판에 포함되지 않은 기능입니다."}
+
     def room(self):
+        if (off := self._room_off()) is not None:
+            return off
         return self._room.state() if self._room else {"ok": False, "error": "그스룸 기능을 불러오지 못했습니다"}
 
     def room_refresh(self):
+        if (off := self._room_off()) is not None:
+            return off
         return self._room.refresh() if self._room else self.room()
 
     def room_book(self, day, start, use="과제", room=None, hours=3, companions=""):
         """``companions``: the '이름 학번' lines typed for this booking only (never saved, never logged)."""
+        if (off := self._room_off()) is not None:
+            return off
         from lecturehub.core import settings
 
         if not self._room:
@@ -1156,12 +1914,18 @@ class Api:
         return self._room.book(*args, hours=hours, confirmed=True, companions=mates)
 
     def room_return(self, booking_id):
+        if (off := self._room_off()) is not None:
+            return off
         return self._room.return_now(str(booking_id)) if self._room else self.room()
 
     def room_cancel(self, ids):
+        if (off := self._room_off()) is not None:
+            return off
         return self._room.cancel(ids) if self._room else self.room()
 
     def room_chat(self, text):
+        if (off := self._room_off()) is not None:
+            return off
         from lecturehub.ai import selected
 
         try:
@@ -1177,15 +1941,21 @@ class Api:
         return self._room.chat(str(text or "")) if self._room else self.room()
 
     def room_chat_confirm(self, intent, ids, booking=None, companions=""):
+        if (off := self._room_off()) is not None:
+            return off
         if str(intent) == "book" and isinstance(booking, dict):
             return self.room_book(booking.get("day", ""), booking.get("start", ""), booking.get("use", "과제"),
                                   booking.get("room") or None, booking.get("hours", 3), companions)
         return self._room.confirm(str(intent), ids or []) if self._room else self.room()
 
     def room_stop(self):
+        if (off := self._room_off()) is not None:
+            return off
         return self._room.stop_job() if self._room else self.room()
 
     def room_rules(self, rules, auto_return=True):
+        if (off := self._room_off()) is not None:
+            return off
         return self._room.save_rules(rules or [], bool(auto_return)) if self._room else self.room()
 
     def _attach_media(self, media):
@@ -1198,37 +1968,6 @@ class Api:
     def open_folder(self, path):
         return self._backend.open_folder(path)
 
-    # 단어 암기장 아티팩트 창 (P-037 제안): claude.ai 주소를 바깥 브라우저 앱 창으로 연다. 코드는 memorizer_link.py
-    def _memorizer(self):
-        from lecturehub.core import edition
-
-        if not edition.has("memorizer"):
-            raise ValueError("공개판에 포함되지 않은 기능입니다.")
-        from .memorizer_link import MemorizerLink
-
-        return MemorizerLink(self._backend.root)
-
-    def memorizer_status(self):
-        from lecturehub.core import edition
-
-        if not edition.has("memorizer"):
-            return {"ok": False, "error": "공개판에 포함되지 않은 기능입니다.", "reason": "공개판에 포함되지 않은 기능입니다.", "state": "disabled", "running": False}
-        return self._memorizer().status()
-
-    def memorizer_config(self, url=None, browser=None, course=None):
-        from lecturehub.core import edition
-
-        if not edition.has("memorizer"):
-            return {"ok": False, "error": "공개판에 포함되지 않은 기능입니다.", "reason": "공개판에 포함되지 않은 기능입니다.", "state": "disabled", "running": False}
-        return self._memorizer().configure(url=url, browser=browser, course=course)
-
-    def memorizer_open(self):
-        from lecturehub.core import edition
-
-        if not edition.has("memorizer"):
-            return {"ok": False, "error": "공개판에 포함되지 않은 기능입니다.", "reason": "공개판에 포함되지 않은 기능입니다.", "state": "disabled", "running": False}
-        return self._memorizer().open()
-
     # windows
     def show_main(self):
         """The small window's [크게], and closing it: back to the main window, visible and not minimized."""
@@ -1239,9 +1978,12 @@ class Api:
             hwnd = self._main_hwnd()
             if hwnd:
                 import ctypes
+                from ctypes import wintypes
 
-                if ctypes.windll.user32.IsIconic(hwnd):  # it was minimized when the notice came: Show() keeps that
+                hwnd = wintypes.HWND(hwnd)
+                if ctypes.windll.user32.IsIconic(hwnd) or not ctypes.windll.user32.IsWindowVisible(hwnd):
                     self._show_main_window(SW_RESTORE)
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
         except Exception:  # noqa: BLE001 - it is shown; only still on the taskbar
             applog.swallowed("큰 창 다시 펴기")
         return {"ok": True}
@@ -1309,8 +2051,11 @@ class Api:
         if sys.platform != "win32":
             return 0
         import ctypes
+        from ctypes import wintypes
 
-        return ctypes.windll.user32.FindWindowW(None, title) or 0
+        find = ctypes.windll.user32.FindWindowW
+        find.restype, find.argtypes = wintypes.HWND, (wintypes.LPCWSTR, wintypes.LPCWSTR)
+        return find(None, title) or 0
 
     def _main_out_of_sight(self) -> bool:
         """True when the main window is minimized or hidden."""
@@ -1323,7 +2068,7 @@ class Api:
         return bool(user32.IsIconic(hwnd) or not user32.IsWindowVisible(hwnd))
 
     def _show_main_window(self, command: int) -> bool:
-        """``SW_MINIMIZE`` or ``SW_RESTORE`` for the main window. Posted (ShowWindowAsync), so it neither waits on the
+        """Hide, minimize or restore the main window. Posted (ShowWindowAsync), so it neither waits on the
         window's own thread nor runs inside the closing event; SW_RESTORE brings a maximized window back maximized."""
         hwnd = self._main_hwnd()
         if hwnd:
@@ -1333,8 +2078,49 @@ class Api:
             return bool(ctypes.windll.user32.ShowWindowAsync(wintypes.HWND(hwnd), command))
         if self._main is None:
             return False
-        (self._main.minimize if command == SW_MINIMIZE else self._main.restore)()  # pywebview, when no handle
+        action = self._main.hide if command == 0 else self._main.minimize if command == SW_MINIMIZE else self._main.restore
+        action()  # pywebview, when no handle
         return True
+
+    def _desktop_ready(self, background=False):
+        """webview.start worker: native handles exist; no window-thread Invoke deadlock."""
+        from . import notify
+        from .tray import Tray
+
+        if self._quitting:
+            return
+        self._tray = Tray(self.show_main, self.quit_app, on_session=self._session_end,
+                          icon=str(ICON) if ICON.exists() else None)
+        notify.set_tray(self._tray)  # also works if the native thread becomes ready after start's timeout
+        self._tray.start()
+        if self._quitting:
+            self._tray.stop()
+            notify.set_tray(None)
+            return
+        if background and not self._quitting:
+            self._keep_open_for_reminders()
+
+    def _session_end(self, ending):
+        self._session_ending = ending
+
+    def _keep_open_for_reminders(self):
+        try:
+            if self._tray is not None and self._tray.available:
+                self._show_main_window(0)  # SW_HIDE: asynchronous, safe inside closing
+            else:
+                self._show_main_window(SW_MINIMIZE)
+        except Exception:  # a failure must never let closing kill the reminder loops
+            applog.swallowed("알림을 위해 창 내리기")
+
+    def quit_app(self):
+        """An explicit exit, reachable from tray and settings. D-050 always wins."""
+        if self._backend.recording:
+            self.show_main()
+            self._keep_open_while_recording()
+            return {"ok": False, "error": "녹음을 끝낸 뒤에 닫을 수 있습니다."}
+        self._quitting = True
+        self._main.destroy()
+        return {"ok": True}
 
     def _recording_key(self):
         """Which recording is running (its session folder), for "once per recording"; ``None`` when not known."""
@@ -1346,12 +2132,84 @@ class Api:
 
     def _on_main_closing(self):
         if self._backend.recording and not self._quitting:
-            # a recording nobody can see runs for hours (user 2026-09-30): the window goes to the taskbar instead
+            # a recording nobody can see runs for hours (user 2026-09-30): the window goes to the taskbar instead.
+            # Also at logoff/shutdown, exactly as before D-084: Windows then shows that Lecture Hub holds it up, and
+            # the user decides (review 2026-11-25: the tray's session flag must not end a recording silently)
             self._keep_open_while_recording()
             return False
+        if not self._quitting and not self._session_ending:
+            from .tray import session_ending
+
+            self._session_ending = session_ending()
+        if not self._quitting and not self._session_ending:
+            from lecturehub.core import startup
+
+            try:
+                choice = startup.close_choice()
+                if choice is None and startup.reminders_on():
+                    if not self._close_prompt.acquire(blocking=False):
+                        return False
+                    try:
+                        self._schedule_close_choice()
+                    except Exception:
+                        self._close_prompt.release()
+                        raise
+                    return False  # return BEFORE the worker's dialog can Invoke the WinForms thread
+                if self._backend.recording:  # capture may have started while preferences were read
+                    self._keep_open_while_recording()
+                    return False
+                if choice is True:
+                    self._keep_open_for_reminders()
+                    return False
+            except Exception:  # do not silently quit if asking or saving failed
+                applog.swallowed("창을 닫은 뒤 알림 선택")
+                return False
         self._backend.stop_live_helpers()  # P-053: the Q&A helper and captions do not outlive the app
         self._quitting = True
+        self._notice_stop.set()  # a Codex notice request ends its CLI process (main() waits for it briefly)
         return True
+
+    def _schedule_close_choice(self):
+        threading.Thread(target=self._ask_close_choice, name="LectureHub close choice", daemon=True).start()
+
+    def _ask_close_choice(self):
+        """Never inside closing: WinForms waits for that event and a dialog Invoke would deadlock it."""
+        from lecturehub.core import startup
+
+        try:
+            if self._quitting or self._session_ending:
+                return
+            choice = bool(self._main.create_confirmation_dialog(
+                "창을 닫아도 알림 받기",
+                "창을 숨기고 마감·시험과 오늘 일정 알림을 계속 받을까요?\n\n"
+                "예: 알림 영역에 Lecture Hub를 남깁니다(아이콘을 누르면 열기, 오른쪽 클릭 → 끝내기).\n"
+                "아이콘을 만들 수 없으면 작업 표시줄로 내립니다.\n"
+                "아니요: 앱을 끝냅니다. 꺼져 있는 동안에는 알림이 오지 않습니다.\n\n"
+                "이 선택은 설정 › 기본 › 알림에서 바꿀 수 있습니다."))
+            startup.set_close_choice(choice)
+            if self._quitting or self._session_ending:
+                return
+            if self._backend.recording:  # capture may have started while the dialog was open
+                self._keep_open_while_recording()
+            elif choice:
+                self._keep_open_for_reminders()
+            else:
+                self.quit_app()  # an explicit quit; the following closing event does not ask again
+        except Exception:
+            applog.swallowed("창을 닫은 뒤 알림 선택")
+        finally:
+            self._close_prompt.release()
+
+    def _end_background_ai(self, timeout: float = 10.0) -> bool:
+        """After the window closed: cancel a running class-notice request and wait briefly until its CLI process
+        tree is ended (``ai.process.execute`` polls the stop every quarter second). True when nothing runs."""
+        self._notice_stop.set()
+        wait = getattr(self._library, "notices_wait", None)
+        try:
+            return bool(wait(timeout)) if callable(wait) else True
+        except Exception:  # noqa: BLE001 - the app is closing anyway
+            applog.swallowed("수업 공지 읽기 끝내기")
+            return False
 
     def _keep_open_while_recording(self) -> None:
         """Minimize the main window and say why, once per recording. Never raises: the close is refused anyway
@@ -1420,6 +2278,11 @@ class Api:
                 ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
 
     def _on_main_closed(self):
+        from . import notify
+
+        notify.set_tray(None)
+        if self._tray is not None:
+            self._tray.stop()
         if self._mini is not None:
             self._mini.destroy()
 
@@ -1606,7 +2469,7 @@ def _already_open() -> bool:
     return True
 
 
-def main() -> int:
+def main(*, background: bool = False) -> int:
     import webview
 
     applog.setup("app")  # first: whatever fails from here on is in the log
@@ -1639,15 +2502,16 @@ def main() -> int:
     width, height = (int(v) for v in size.split("x")) if size else (1280, 760)
     main_window = webview.create_window(
         MAIN_TITLE, url=str(WEB / "index.html"), js_api=api, width=width, height=height,
-        min_size=MAIN_MIN, maximized=not size, background_color="#f5f0e8", text_select=True)
+        min_size=MAIN_MIN, maximized=not size, hidden=background, background_color="#f5f0e8", text_select=True)
     api._main = main_window
     guard_navigation(main_window)  # it carries the whole API: it may not leave the app's own page
     main_window.events.loaded += api._bind_drop
     main_window.events.closing += api._on_main_closing
     main_window.events.closed += api._on_main_closed  # the small window (made on the first notice) goes too
-    webview.start(icon=str(ICON) if ICON.exists() else None, private_mode=True)
+    webview.start(api._desktop_ready, (background,), icon=str(ICON) if ICON.exists() else None, private_mode=True)
+    api._end_background_ai()  # a Codex notice request does not outlive the app (D-073)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(background="--background" in sys.argv[1:]))

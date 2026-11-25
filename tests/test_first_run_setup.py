@@ -140,35 +140,3 @@ def test_cli_root_callback_fills_configured_folder_or_fails(tmp_path):
         settings.root_option_callback(None)
     settings.save({"data_root": str(tmp_path)})
     assert settings.root_option_callback(None) == tmp_path
-
-
-def test_gsr_companions_are_parsed_not_saved_and_kept_out_of_the_code(tmp_path):
-    from lecturehub.core import settings
-
-    rows = settings.parse_companions("홍 길동 20201234\n김철수,20211111\n\n")
-    assert rows == [["홍 길동", "20201234"], ["김철수", "20211111"]]
-    assert "gsr" not in settings.load()
-    for bad in ("이름만", "이름 abc", "이름 123", "\n".join(f"a{i} 2020000{i}" for i in range(9))):
-        with pytest.raises(ValueError):
-            settings.parse_companions(bad)
-    from pathlib import Path
-
-    core = Path(settings.__file__).parents[1] / "booking" / "assets" / "gsr_core.js"
-    assert "companions: []" in core.read_text(encoding="utf-8")
-
-
-def test_browser_run_hands_the_typed_companions_to_the_adapter(monkeypatch):
-    from lecturehub.booking import browser
-    seen = {}
-
-    class Fake:
-        @staticmethod
-        def run(action, stop=None):
-            seen.update(action)
-            return {"ok": True}
-
-    monkeypatch.setattr(browser, "aside_cli", Fake)
-    crew = [["가나", "20200001"], ["다라", "20200002"]]
-    # user_confirmed: the public edition books only what the user confirmed (booking/browser.py); the full one ignores it
-    result = browser.run({"action": "book", "companions": crew, "user_confirmed": True}, which="aside")
-    assert result["ok"] and seen["companions"] == crew  # rooms: full build only (test_booking)

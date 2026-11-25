@@ -1,15 +1,11 @@
-"""Security review 2026-11-05: Recycle Bin flags, zip bombs, eTL token kept on its own host."""
+"""Security review 2026-11-05: Recycle Bin flags, eTL token kept on its own host."""
 import io
 import json
-import zipfile
-from pathlib import Path
 
 import pytest
 
-from lecturehub.core import edition, recycle_bin
+from lecturehub.core import recycle_bin
 from lecturehub.index import etl_sync, wav_cleanup
-if edition.has("assignment"):
-    from lecturehub.index import assignment_pack
 
 
 # ---------- (2) never a silent permanent delete
@@ -98,46 +94,6 @@ def test_SEC_recycle_reports_failure_when_items_are_left_or_aborted(tmp_path):
     with pytest.raises(OSError, match="옮기지 못했습니다"):  # the user said no to the nuke warning
         wav_cleanup.to_recycle_bin([item], shell=_fake_shell(seen, delete=False, aborted=True),
                                    entries=lambda d: [])
-
-
-# ---------- (3) zip bombs
-def _zip(path: Path, members: dict[str, bytes]) -> Path:
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, data in members.items():
-            archive.writestr(name, data)
-    return path
-
-
-@pytest.mark.skipif(not edition.has("assignment"), reason="Assignment helper is excluded from the public edition")
-def test_SEC_unzip_caps_each_file_total_and_count(tmp_path):
-    archive = _zip(tmp_path / "bomb.zip", {"ok.txt": b"x" * 100, "big.bin": b"\0" * 5000,
-                                           "b.txt": b"y" * 600, "c.txt": b"z" * 600})
-    out = assignment_pack.unzip(archive, tmp_path / "out", max_total=1000, max_file=1000)
-    names = sorted(p.name for p in out)
-    assert names == ["b.txt", "ok.txt"]  # big.bin over the per-file cap; c.txt over the total
-    assert not (tmp_path / "out" / "big.bin").exists() and not (tmp_path / "out" / "c.txt").exists()
-    many = _zip(tmp_path / "many.zip", {f"f{i}.txt": b"a" for i in range(20)})
-    assert len(assignment_pack.unzip(many, tmp_path / "many", max_entries=5)) == 5
-
-
-@pytest.mark.skipif(not edition.has("assignment"), reason="Assignment helper is excluded from the public edition")
-def test_SEC_unzip_does_not_trust_a_lying_size_header(tmp_path):
-    """A synthetic bomb whose header claims 10 bytes while the stream inflates to 2 MB."""
-    path = _zip(tmp_path / "liar.zip", {"bomb.txt": b"\0" * (2 * 1024 * 1024)})
-    raw = bytearray(path.read_bytes())
-    real = (2 * 1024 * 1024).to_bytes(4, "little")
-    fake = (10).to_bytes(4, "little")
-    assert raw.count(real) == 2  # local header + central directory
-    raw = raw.replace(real, fake)
-    path.write_bytes(bytes(raw))
-    out = assignment_pack.unzip(path, tmp_path / "out", max_file=1024 * 1024)
-    assert out == [] and not (tmp_path / "out" / "bomb.txt").exists()
-
-
-@pytest.mark.skipif(not edition.has("assignment"), reason="Assignment helper is excluded from the public edition")
-def test_SEC_unzip_default_caps():
-    assert assignment_pack.ZIP_MAX_TOTAL == 200 * 1024 * 1024
-    assert assignment_pack.ZIP_MAX_FILE == 50 * 1024 * 1024
 
 
 # ---------- (5) eTL token stays on BASE's host

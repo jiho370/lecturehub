@@ -107,7 +107,7 @@ def test_installed_public_build_stays_public(tmp_path, monkeypatch):
     monkeypatch.setenv("LECTUREHUB_EDITION", "full")
     assert edition.name() == "full"  # a source checkout: tests may override
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    assert edition.name() == "public" and not edition.has("assignment")
+    assert edition.name() == "public" and not edition.has("mai")
 
 
 def test_live_transcription_is_not_switched_off_in_the_public_edition(tmp_path, monkeypatch):

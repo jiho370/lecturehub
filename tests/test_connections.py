@@ -135,15 +135,6 @@ def feature(rows, keys, wanted):
     return next(f for f in connections.features(rows, keys) if f["id"] == wanted)
 
 
-def test_gsr_prefers_aside_then_claude_in_chrome_then_says_what_is_missing():
-    keys = connections.status()
-    assert feature(tool_rows(aside=1, claude=1), keys, "gsr")["via"] == "aside"
-    fallback = feature(tool_rows(claude=1), keys, "gsr")
-    assert fallback["state"] == "fallback" and fallback["via"] == "chrome"
-    missing = feature(tool_rows(), keys, "gsr")
-    assert missing["state"] == "missing" and "Aside" in missing["hint"]
-
-
 def test_clova_needs_aside_and_otherwise_points_to_manual_import():
     keys = connections.status()
     assert feature(tool_rows(aside=1), keys, "clova")["state"] == "ready"

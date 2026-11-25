@@ -14,6 +14,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from .units import CHUNK_CHARS, is_chunked
+
 SLIDES = {".pptx", ".ppsx", ".ppt"}
 CREATE_NO_WINDOW = 0x08000000
 
@@ -146,7 +148,11 @@ def open_material(path: str | Path, page: int, root: Path, allow_convert: bool =
         os.startfile(str(path))
         return {"ok": True, "program": prog_id or "default", "page_applied": False, "opened": str(path)}
     os.startfile(str(path))
-    return {"ok": True, "program": "default", "page_applied": False, "opened": str(path)}
+    result = {"ok": True, "program": "default", "page_applied": False, "opened": str(path)}
+    if is_chunked(path.name):  # D-078: a 구간 is a piece of the text, not a page the program could go to
+        result["note"] = ("한글·워드 문서는 그 자리로 바로 가지 못해 처음부터 열었습니다"
+                          f"(구간 {max(1, int(page))}, 구간은 약 {CHUNK_CHARS:,}자 단위)")
+    return result
 
 
 def render_page(path: str | Path, page: int, root: Path, width: int = 1280, allow_convert: bool = True) -> Path | None:

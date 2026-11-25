@@ -16,6 +16,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+from lecturehub.materials.units import is_chunked
+
 from . import notes
 
 QUOTE_CHARS = 90
@@ -50,8 +52,10 @@ def _short(text: str) -> str:
     return text if len(text) <= QUOTE_CHARS else text[:QUOTE_CHARS - 1].rstrip() + "…"
 
 
-def render(note: dict, *, title: str, subtitle: str, sources: notes.Sources, materials: dict[str, str]) -> str:
-    """HTML for a loaded note (:func:`notes.load`). Same citation → same footnote number."""
+def render(note: dict, *, title: str, subtitle: str, sources: notes.Sources, materials: dict[str, str],
+           chunked: frozenset[str] | set[str] = frozenset()) -> str:
+    """HTML for a loaded note (:func:`notes.load`). Same citation → same footnote number. ``chunked``: material
+    ids of .hwp/.hwpx/.docx, whose page number is a 구간 of the text, not a 쪽 (D-078)."""
     numbers: dict[tuple, int] = {}
     footnotes: list[str] = []
 
@@ -69,7 +73,8 @@ def render(note: dict, *, title: str, subtitle: str, sources: notes.Sources, mat
                                  f'<q>{html.escape(said)}</q></li>')
             else:
                 name = materials.get(cite["material_id"], "강의자료")
-                footnotes.append(f'<li id="fn{numbers[spot]}">{html.escape(name)} {cite["page_no"]}쪽</li>')
+                place = f'구간 {cite["page_no"]}' if cite["material_id"] in chunked else f'{cite["page_no"]}쪽'
+                footnotes.append(f'<li id="fn{numbers[spot]}">{html.escape(name)} {place}</li>')
         n = numbers[spot]
         return f'<sup><a href="#fn{n}">{n}</a></sup>'
 
@@ -147,10 +152,13 @@ def publish(connection: sqlite3.Connection, root: Path, lecture_id: str, *, crea
         raise ValueError("검증을 통과한 정리본 내용이 없습니다.")
     pack = note_pack.pack(connection, root, lecture_id)
     target = _target(connection, lecture_id, pack)
-    materials = {r[0]: r[1] for r in connection.execute("SELECT id, title FROM Material")}
+    rows = connection.execute("SELECT id, title, kind FROM Material").fetchall()
+    materials = {r[0]: r[1] for r in rows}
+    chunked = {r[0] for r in rows if is_chunked(r[2])}
     title = f"{pack['course']} {pack['label']} 정리본"
     subtitle = f"{pack['date']} · 본문의 작은 번호를 누르면 그 말을 한 녹음 시각과 원문이 나옵니다."
-    text = render(note, title=title, subtitle=subtitle, sources=notes.Sources(connection), materials=materials)
+    text = render(note, title=title, subtitle=subtitle, sources=notes.Sources(connection), materials=materials,
+                  chunked=chunked)
     target.parent.mkdir(parents=True, exist_ok=True)
     part = target.with_suffix(".html.part")
     part.write_text(text, encoding="utf-8")

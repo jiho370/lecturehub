@@ -109,8 +109,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", default=None, help="major.minor.patch (default: this repository's version)")
     args = parser.parse_args(argv)
     app, out = args.app.resolve(), args.out.resolve()
-    if not (app / "LectureHub.exe").is_file() or not (app / "LectureHubWorker.exe").is_file():
-        raise SystemExit(f"{app} is not a build folder (LectureHub.exe and LectureHubWorker.exe expected)")
+    if not all((app / name).is_file() for name in ("LectureHub.exe", "LectureHubWorker.exe", "LectureHubStartup.exe")):
+        raise SystemExit(f"{app} is not a build folder (LectureHub.exe, LectureHubWorker.exe and LectureHubStartup.exe expected)")
     if not (app / "_internal" / "lecturehub" / "core" / "edition.json").is_file():
         raise SystemExit("only the public edition goes to the Store (edition marker missing)")
     if (app / "NOT_FOR_RELEASE.txt").exists():

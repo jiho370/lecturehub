@@ -22,8 +22,8 @@ class Engine(Protocol):
     def session(self): ...
 
 
-def selected(feature: str = "notes") -> str:
-    value = settings.get("ai_engine", {})
+def selected(feature: str = "notes", *, saved: dict | None = None) -> str:
+    value = settings.get("ai_engine", {}) if saved is None else saved.get("ai_engine", {})
     value = {"default": value} if isinstance(value, str) else value if isinstance(value, dict) else {}
     name = (os.environ.get("LECTUREHUB_AI_ENGINE") or value.get(feature) or value.get("default") or "codex").strip().lower()
     if name not in CHOICES:

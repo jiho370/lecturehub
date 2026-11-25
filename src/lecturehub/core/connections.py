@@ -229,4 +229,6 @@ def features(tool_rows: dict[str, dict] | None = None, keys: list[dict] | None =
                 "via": ai if ready else None,
                 "hint": f"선택한 {ai} 프로그램이 있습니다. 로그인·사용 한도는 별도 확인하세요." if ready else
                 "AI 사용이 꺼져 있습니다." if ai == "off" else f"선택한 {ai} 프로그램을 설치하고 로그인하세요."})
-    return out
+    from . import edition
+
+    return [row for row in out if row["id"] != "gsr" or edition.has("gsr")]

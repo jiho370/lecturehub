@@ -78,7 +78,7 @@ APPROVED_FIELDS = {
 @pytest.fixture
 def connection(tmp_path):
     with closing(db.connect(tmp_path / "lecturehub.sqlite")) as connection:
-        assert db.migrate(connection) == [1, 2, 3, 4, 5, 6, 7, 8]
+        assert db.migrate(connection) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
         yield connection
 
 
@@ -158,7 +158,7 @@ def test_init_db_korean_spaces_parentheses_wal_and_idempotence(tmp_path):
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert db.migrate(connection) == []
-        assert [row[0] for row in connection.execute("SELECT version FROM schema_version")] == [1, 2, 3, 4, 5, 6, 7, 8]
+        assert [row[0] for row in connection.execute("SELECT version FROM schema_version")] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
         with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
             connection.execute("INSERT INTO Lecture VALUES ('bad', 'missing', '2026-09-28', 1, NULL, NULL)")
 

@@ -55,10 +55,36 @@ NOTICES = {
         "개인 계정은 해당 계정의 데이터 설정을 확인하세요. 보관 기간도 작업 공간의 정책을 따릅니다.\n"
         "CLI 로그인 상태만으로는 Edu 작업 공간인지 알 수 없습니다. 계정에서 직접 확인하세요.\n"
         "정책: https://learn.chatgpt.com/docs/pricing"),
-    "claude_note": TEXT_RIGHTS + "이 과목의 전사본·강의자료 글을 Claude Code(Anthropic)로 보내 노트를 만듭니다. HTML 도우미에서는 자료 파일·그림도 읽을 수 있습니다.\n" + CLAUDE_POLICY,
+    "codex_notices": TEXT_RIGHTS + (
+        "이 과목의 전사 글을 과목 이름·수업 날짜, 이 과목의 시간표와 달력 일정(시간표 변경 포함)과 함께 Codex(OpenAI)로 보내 수업 중에 말한 "
+        "일정 공지(휴강·보강·시험·과제 마감 등)를 찾습니다. 과목 없는 일정과 소리는 보내지 않습니다. "
+        "찾은 공지는 달력 후보로만 넣고, 확정은 내가 합니다.\n"
+        "로그인한 ChatGPT 계정과 작업 공간 정책을 따릅니다. ChatGPT Edu는 기본적으로 업무 데이터를 모델 학습에 쓰지 않습니다. "
+        "개인 계정은 해당 계정의 데이터 설정을 확인하세요. 보관 기간도 작업 공간의 정책을 따릅니다.\n"
+        "CLI 로그인 상태만으로는 Edu 작업 공간인지 알 수 없습니다. 계정에서 직접 확인하세요.\n"
+        "정책: https://learn.chatgpt.com/docs/pricing"),
+    "codex_etl_notices": (
+        "eTL 공지에도 사람 이름 등 개인정보가 있을 수 있습니다. 보낼 권한을 확인하세요.\n"
+        "이 과목의 최근 eTL 공지(제목·본문·올린 날짜)를 과목 이름, 오늘 날짜, 이 과목의 시간표와 달력 일정(시간표 변경 포함)과 함께 "
+        "Codex(OpenAI)로 보내 시험·과제 마감·퀴즈·휴강·보강 같은 일정을 찾습니다. 공지마다 한 번 보내고(보내다 실패하면 같은 글을 "
+        "최대 3번까지, 제목이나 본문이 고쳐지면 다시 보냅니다), "
+        "녹음 중에는 보내지 않습니다. 첨부 파일, 다른 과목, 과목 없는 일정, 소리는 보내지 않습니다. "
+        "찾은 일정은 달력 후보로만 넣고, 확정은 내가 합니다. 전사 글을 보내는 '수업 중 공지 찾기' 허용과는 따로입니다.\n"
+        "로그인한 ChatGPT 계정과 작업 공간 정책을 따릅니다. ChatGPT Edu는 기본적으로 업무 데이터를 모델 학습에 쓰지 않습니다. "
+        "개인 계정은 해당 계정의 데이터 설정을 확인하세요. 보관 기간도 작업 공간의 정책을 따릅니다.\n"
+        "CLI 로그인 상태만으로는 Edu 작업 공간인지 알 수 없습니다. 계정에서 직접 확인하세요.\n"
+        "정책: https://learn.chatgpt.com/docs/pricing"),
+    "claude_note": TEXT_RIGHTS +"이 과목의 전사본·강의자료 글을 Claude Code(Anthropic)로 보내 노트를 만듭니다. HTML 도우미에서는 자료 파일·그림도 읽을 수 있습니다.\n" + CLAUDE_POLICY,
     "claude_qa": TEXT_RIGHTS + "발표 자료 글과 실시간 자막 글을 Claude Code(Anthropic)로 보내 답할 거리를 받습니다.\n" + CLAUDE_POLICY,
-    "claude_assignment": TEXT_RIGHTS + "과제 파일·강의계획서·노트·슬라이드 글과 전사를 Claude Code(Anthropic)로 보냅니다.\n" + CLAUDE_POLICY,
+    "ai_app_link": TEXT_RIGHTS + (
+        "이 과목의 전사 글, 정리본, 강의자료 글, 달력 일정, 앱이 받아 둔 eTL 공지와 과제 목록(제목·마감·제출 상태, 점수 없음)을 내가 연결한 AI 앱"
+        "(ChatGPT 데스크톱·Codex, Claude 데스크톱 등)이 물어볼 때 건넵니다. 녹음 파일(소리)은 건네지 않습니다.\n"
+        "건넨 글이 어느 회사로 가고 어떻게 보관·사용되는지는 연결한 AI 앱과 그 계정의 약관·설정을 따릅니다. "
+        "앱에서 이 과목의 허용을 거두면 다음 요청부터 바로 건네지 않습니다. 이미 건넨 글은 되돌릴 수 없습니다."),
 }
+# Providers that never take a standing all-courses consent (D-062 does not apply): each course is allowed by itself.
+# The two class-notice readers are text going to OpenAI course by course too (integration review: no "*" via CLI).
+PER_COURSE_ONLY = frozenset({"ai_app_link", "codex_notices", "codex_etl_notices"})
 
 
 def _public() -> bool:
@@ -90,11 +116,13 @@ class ConsentStore:
         return read_json(self.path, {}) or {}
 
     def granted(self, provider: str, course: str, *, allow_synthetic: bool = False) -> bool:
-        if _public() and course == ALL_COURSES:
+        if course == ALL_COURSES and (_public() or provider in PER_COURSE_ONLY):
             return False
         courses = self.entries().get(provider, {})
         entry = courses.get(course)
         if entry is None:
+            if provider in PER_COURSE_ONLY:
+                return False
             # D-062: the user's standing consent for every named course. Never covers a blank course.
             every = courses.get(ALL_COURSES)
             return not _public() and bool(named(course)) and every is not None and every.get("authority") == CONFIRMED
@@ -105,6 +133,8 @@ class ConsentStore:
         """Standing consent for every named course of this provider (user decision D-062)."""
         if _public():
             raise ValueError("공개판에서는 상시 동의를 저장하지 않습니다. 제공자·과목마다 따로 확인해 주세요.")
+        if provider in PER_COURSE_ONLY:
+            raise ValueError("이 연결은 과목마다 따로 허용합니다. 모든 과목 상시 동의는 저장하지 않습니다.")
         data = self.entries()
         data.setdefault(provider, {})[ALL_COURSES] = {
             "granted_at": at_ms, "granted_by": by, "notice": NOTICES.get(provider, provider),
@@ -133,7 +163,7 @@ class ConsentStore:
                     continue
                 standing = course == ALL_COURSES
                 if standing:  # D-062 standing consent: never counts in the public edition
-                    counts = entry.get("authority") == CONFIRMED and not _public()
+                    counts = entry.get("authority") == CONFIRMED and not _public() and provider not in PER_COURSE_ONLY
                 else:
                     counts = authority_of(course, entry) == CONFIRMED
                 if counts:

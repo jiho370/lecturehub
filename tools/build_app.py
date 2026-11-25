@@ -7,7 +7,7 @@
    also looks for the terms in LECTUREHUB_PRIVATE_TERMS (a local text file OUTSIDE the repository, one term per line)
    and the course names in the configured semester's 시간표.csv; it warns when it has neither,
 2. runs PyInstaller (packaging/lecturehub.spec) on that export: FOLDER/dist/LectureHub with LectureHub.exe and
-   LectureHubWorker.exe, both stamped with the app version,
+   LectureHubWorker.exe and the windowed login launcher LectureHubStartup.exe, all stamped with the app version,
 3. refuses the result when it lacks the public-edition marker or carries a library that must not ship (AGPL),
 4. puts ffmpeg/ffprobe into LectureHub/bin: by default the pinned LGPL shared build (tools/fetch_tools.py: fixed
    address and SHA-256, checked for the encoders and filters the app uses). ``--ffmpeg path`` copies the ffmpeg on

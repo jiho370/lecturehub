@@ -221,3 +221,90 @@ def test_hold_reasons_read_in_korean():
     assert "읽지 못했습니다" in holds.reason_ko("source read failed (ValueError)")
     assert "소리 파일" in holds.reason_ko("ffprobe could not read audio")
     assert holds.reason_ko("something new") == "something new"  # unknown reasons are shown, not hidden
+
+
+# ---------- HOLD-006: the app's first pass (user request 2026-11-22)
+@pytest.fixture
+def busy_semester(tmp_path, monkeypatch):
+    monkeypatch.setattr("lecturehub.index.ingest.probe_media", lambda path, ffprobe=None: MediaMetadata(
+        60000, "aac", 16000, 1))
+    root = make_root(tmp_path)
+    t, notes = root / "전사본/합성과목", root / "합성과목/수업 정리 html"
+    (t / "26.9.22 합성과목 (통째).txt").write_text("시각 없는 합성 문장.\n또 다른 합성 문장.\n", encoding="utf-8")
+    (t / "26.9.23 합성과목.txt").write_text(
+        "합성 제목\n2026.09.22 화 오전 10:00 ・ 2분 30초\n합성 작성자\n\n참석자 1 00:01\n머리말 날짜가 다른 합성.\n",
+        encoding="utf-8-sig")
+    (notes / "합성과목_중간고사_대비.html").write_text("<html><body>합성 시험 대비</body></html>", encoding="utf-8")
+    (notes / "합성과목_3주차_정리.html").write_text("<html><body>합성 주차 정리</body></html>", encoding="utf-8")
+    index_root(root)
+    connection = connect(root / "_lecturehub/lecturehub.sqlite")
+    # the 9/22 lecture has one readable transcript; with only one the timeless file stays the user's to decide
+    assert holds.auto_rule(connection, str(t / "26.9.22 합성과목 (통째).txt"),
+                           {"reason": "transcript engine is unknown", "kind": "transcript"},
+                           holds._course_folders(connection), root) is None
+    columns = [r[1] for r in connection.execute("PRAGMA table_info(Transcript)") if r[1] not in ("id", "sha256")]
+    connection.execute(f"INSERT INTO Transcript (id, sha256, {', '.join(columns)}) "  # a second readable one (synthetic row)
+                       f"SELECT 'T2', 'synthetic', {', '.join(columns)} FROM Transcript LIMIT 1")
+    connection.commit()
+    report = index_root(root, connection)
+    yield root, connection, report
+    connection.close()
+
+
+def test_HOLD_006_first_pass_takes_out_only_rule_settled_items_with_reasons(busy_semester):
+    root, connection, report = busy_semester
+    before = _digests(root)
+    auto = {a["name"]: a for a in holds.questions(connection)["auto"]}
+    assert set(auto) == {"합성과목_중간고사_대비.html", "26.9.22 합성과목 (통째).txt"}
+    assert auto["합성과목_중간고사_대비.html"]["rule"] == "course_wide_note"
+    assert auto["26.9.22 합성과목 (통째).txt"]["rule"] == "unreadable_extra"
+    assert all(a["why"] in holds.AUTO_WHY.values() for a in auto.values())
+    assert report.auto_dismissed == 1  # the note went on the first index, the timeless transcript on this one
+    left = {c["file"] for c in holds.questions(connection)["cards"]}
+    assert {"합성과목_3주차_정리.html", "26.9.23 합성과목.txt"} <= left  # a session mark / a date to choose: the user's
+    row = connection.execute("SELECT e.source, e.detail FROM Evidence e JOIN IngestItem i ON i.id = e.subject_id "
+                             "WHERE e.kind = 'app_dismissed' AND i.source_path LIKE '%중간고사%'").fetchone()
+    assert row[0] == "heuristic" and '"decided_by": "app_rule"' in row[1]  # never recorded as the user's decision
+    index_root(root, connection)
+    assert len(holds.questions(connection)["auto"]) == 2  # a second index does not repeat or undo it
+    assert _digests(root) == before  # nothing in the semester folder changes
+
+
+def test_HOLD_006_undo_brings_it_back_and_the_first_pass_leaves_it_to_the_user(busy_semester):
+    root, connection, _ = busy_semester
+    item = next(a for a in holds.questions(connection)["auto"] if a["rule"] == "course_wide_note")
+    holds.undo(connection, item["id"])
+    connection.commit()
+    holds.triage(connection, root)
+    connection.commit()
+    assert "합성과목_중간고사_대비.html" in {c["file"] for c in holds.questions(connection)["cards"]}
+    assert item["id"] not in {a["id"] for a in holds.questions(connection)["auto"]}
+
+
+def test_HOLD_006_a_file_already_linked_is_taken_out(busy_semester):
+    root, connection, _ = busy_semester
+    path = str(root / "전사본/합성과목/26.9.22 합성과목.txt")
+    assert connection.execute("SELECT 1 FROM Transcript WHERE source_file IN (?, ?)",
+                              (path, "전사본\\합성과목\\26.9.22 합성과목.txt")).fetchone()
+    connection.execute("INSERT INTO IngestItem (id, source_path, suggestion, state) VALUES ('HELD1', ?, ?, 'held')",
+                       (path, '{"reason": "same transcript hash has a different lecture identity", "kind": "transcript"}'))
+    holds.triage(connection, root)
+    assert connection.execute("SELECT state FROM IngestItem WHERE id='HELD1'").fetchone()[0] == "rejected"
+    assert next(a for a in holds.auto_dismissed(connection) if a["id"] == "HELD1")["rule"] == "already_linked"
+
+
+def test_HOLD_006_date_card_recommends_the_day_that_fits_the_timetable(busy_semester):
+    _root, connection, _ = busy_semester
+    card = next(c for c in holds.questions(connection)["cards"] if c["file"] == "26.9.23 합성과목.txt")
+    assert card["recommend"]["date"] == "2026-09-22"  # 화/금 course: 9/22 is a Tuesday, 9/23 a Wednesday
+    assert "화" in card["recommend"]["why"] and card["recommend"]["value"]["date"] == "2026-09-22"
+    assert card["answered"] is None  # only a recommendation; the user still answers
+
+
+def test_HOLD_006_week_and_weekday_name_gets_a_recommended_date(semester):
+    _root, connection = semester
+    card = next(c for c in holds.questions(connection)["cards"] if c["file"] == "2주차 수업(화요일).txt")
+    first = connection.execute("SELECT min(date) FROM Lecture").fetchone()[0]
+    start = datetime.fromisoformat(first).date()
+    monday = start - timedelta(days=start.weekday())
+    assert card["recommend"]["date"] == (monday + timedelta(days=8)).isoformat()  # week 2, Tuesday

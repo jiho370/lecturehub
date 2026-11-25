@@ -270,11 +270,13 @@ textarea,input{user-select:text}
 .cal-grid .ev,.cal-grid .ex{font-size:12px;border-radius:4px;padding:1px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cal-grid .ev{background:var(--chip);color:var(--ink)}
 .cal-grid .ev.k-exam,.cal-grid .ev.k-quiz{background:#f3d9d3;color:#8a2f1d}
-.cal-grid .ev.k-assignment{background:var(--accent-soft);color:var(--accent)}
+.cal-grid .ev.k-assignment,.cal-grid .ev.k-report{background:var(--accent-soft);color:var(--accent)}
+.cal-grid .ev.k-presentation{background:#e6def4;color:#4b2f86}
 .cal-grid .ev.etl{box-shadow:inset 2px 0 0 var(--accent)}
 .cal-grid .ex{color:var(--faint);background:transparent;border:1px dashed var(--line)}
 .cal-grid .more{font-size:12px;color:var(--faint)}
 :root[data-theme="dark"] .cal-grid .ev.k-exam,:root[data-theme="dark"] .cal-grid .ev.k-quiz{background:#4a2a24;color:#f0c2b6}
+:root[data-theme="dark"] .cal-grid .ev.k-presentation{background:#3a2f52;color:#d6c8f2}
 .cal-side{border-left:1px solid var(--line-2);overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
 .cal-side .sl{font-size:12px;color:var(--faint);margin-top:6px}
 .cal-side .up{display:flex;gap:10px;align-items:flex-start;padding:6px 8px;border-radius:8px;cursor:pointer;font-size:13px}
@@ -396,66 +398,7 @@ body.html-full .html-float{display:flex;align-items:center;gap:8px;padding:6px 1
 body.html-full .html-float #htmlFloatName{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 body.html-full .html-float > button{font-size:14px;padding:2px 8px;border-radius:8px;color:var(--sub)}
 body.html-full .html-float > button:hover{background:var(--chip);color:var(--ink)}
-/* assignment helper buttons in the calendar's upcoming list (user request 2026-09-29) */
-.cal-side .hw-acts{display:flex;gap:6px;margin-top:4px}
-.cal-side .mini{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--chip);color:var(--ink);white-space:nowrap}
-.cal-side .mini:hover{background:var(--line-2)}
 
-/* 그스룸 예약 (P-019) — 달력 창 틀(.cal-panel/.cal-head/.cal-body/.cal-side)을 그대로 쓰고 안쪽만 추가 */
-.room-sub{color:var(--faint);font-size:12px;margin-left:4px}
-.room-job{padding:8px 16px;font-size:13px;border-bottom:1px solid var(--line-2);display:flex;gap:8px;align-items:center}
-.room-job.run,.room-job.stop{background:var(--warn-soft);color:var(--warn)}
-.room-job .grow{flex:1;min-width:0}
-.room-chat{padding:8px 16px;border-bottom:1px solid var(--line-2);display:flex;flex-direction:column;gap:6px}
-.room-chat-log{display:flex;flex-direction:column;gap:4px;max-height:150px;overflow:auto;font-size:13px}
-.room-chat-log .rc{padding:4px 10px;border-radius:8px;max-width:88%;line-height:1.45;white-space:pre-wrap}
-.room-chat-log .rc.me{align-self:flex-end;background:var(--accent-soft);color:var(--ink)}
-.room-chat-log .rc.bot{align-self:flex-start;background:var(--panel);border:1px solid var(--line-2);color:var(--sub)}
-.room-chat-log .rc-acts{display:flex;gap:6px;margin-top:6px}
-.room-chat-in{display:flex;gap:8px}
-.room-chat-in input{flex:1;min-width:0;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:999px;padding:8px 16px;background:var(--panel);color:var(--ink)}
-.room-chat .primary{background:var(--accent);border:1px solid var(--accent);color:#fff;border-radius:999px;padding:8px 16px;font-size:13px;font-weight:600}
-.room-bk .tag{font-size:12px;color:var(--accent);border:1px solid var(--accent);border-radius:999px;padding:0 6px;margin-left:4px;vertical-align:1px}
-.room-job.ok{background:var(--accent-soft);color:var(--accent)}
-.room-job.bad{background:var(--rec-soft);color:var(--rec)}
-.room-main{overflow:auto;padding:12px 16px;display:flex;flex-direction:column;gap:8px;min-width:0}
-.room-main .sl{font-size:12px;color:var(--faint);margin-top:8px}
-.room-main .sl small{margin-left:6px}
-.room-main .hint{color:var(--faint);font-size:13px}
-.chips{display:flex;flex-wrap:wrap;gap:6px}
-.chipbtn{border:1px solid var(--line);border-radius:999px;padding:4px 12px;background:var(--panel);font-size:13px;font-variant-numeric:tabular-nums}
-.chipbtn:hover:not(.on):not(:disabled){background:var(--panel-2)}
-.chipbtn.on{background:var(--accent);border-color:var(--accent);color:#fff}
-.chipbtn.sug{border-style:dashed}
-.chipbtn:disabled{opacity:.5;cursor:default}
-.room-form{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.room-form label{display:flex;gap:6px;align-items:center;font-size:13px;color:var(--sub)}
-.room-form select,.room-rule select{font:inherit;font-size:13px;border:1px solid var(--line);border-radius:8px;padding:4px 8px;background:var(--panel);color:var(--ink)}
-.room-end{font-size:13px;color:var(--sub);font-variant-numeric:tabular-nums}
-.room-main .primary{background:var(--accent);border:1px solid var(--accent);color:#fff;border-radius:999px;padding:8px 16px;font-size:13px;font-weight:600}
-.room-scrim .primary:disabled,.room-scrim .ghost:disabled{opacity:.45;cursor:default}
-.room-bk{display:flex;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--line-2);border-radius:8px;font-size:13px}
-.room-bk .grow{flex:1;min-width:0}
-.room-bk small{display:block;color:var(--faint);font-size:12px}
-.room-bk.past{opacity:.65}
-.room-rule{display:flex;gap:4px;align-items:center}
-.room-rule select{padding:4px 6px;flex:1;min-width:0}
-.room-auto{font-size:13px;color:var(--sub);display:flex;gap:6px;align-items:center;margin-top:4px}
-.room-log{font-size:12px;color:var(--sub);padding:2px 4px;line-height:1.45}
-.room-log .t{color:var(--faint);margin-right:6px;font-variant-numeric:tabular-nums}
-.room-log small{color:var(--faint);margin-left:6px}
-.room-log.bad{color:var(--rec)}
-/* 그스룸 정기 예약 창 (사이드바 반복 아이콘) */
-.room-panel.room-rules{width:min(640px,calc(100vw - 32px));height:auto;max-height:min(720px,calc(100vh - 48px))}
-.room-rules-body{padding:16px 16px 16px}
-.room-rules-body .acts{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-.room-rules-body .acts .hint{font-size:12px}
-.room-rules-body .room-rule{gap:6px}
-.room-rules-body .room-rule select{flex:0 1 auto;min-width:72px}
-.room-rules-body .room-rule .ibtn{margin-left:auto}
-.room-next{display:flex;flex-direction:column;padding:8px 10px;border:1px solid var(--line-2);border-radius:8px;font-size:13px}
-.room-next small{color:var(--faint);font-size:12px}
-.room-next.off{opacity:.55}
 
 /* left rail (user pick "B안", 2026-09-29): labelled destinations, never clipped */
 .rail{grid-row:1/3;grid-column:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 0 12px}
@@ -479,6 +422,51 @@ body.html-full .html-float > button:hover{background:var(--chip);color:var(--ink
 body.home-view .center{grid-template-rows:minmax(0,1fr)}
 body.home-view .center > .pane:not(.home){display:none}
 body.home-view .center > .home{display:flex}
+.today-card{margin:12px 12px 4px;padding:12px 16px;border:1px solid var(--line);border-radius:10px;background:var(--panel);max-height:34vh;overflow:auto;flex-shrink:0}
+.today-card h3{font-size:16px;margin:0 0 8px}.today-card h3 small{font-size:12px;font-weight:400;color:var(--faint)}
+.today-columns{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;font-size:13px}
+.today-columns b{font-size:12px}.today-columns ul{margin:6px 0 0;padding-left:16px}.today-columns li{margin:3px 0;overflow-wrap:anywhere}
+/* D-081: the week picture shares the home's theme and never sets a minimum column width. */
+.today-card.with-week{max-height:58vh;overflow-x:hidden;padding-bottom:16px}
+.today-head{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.today-head h3{margin:0;white-space:nowrap}
+.today-tools{display:flex;align-items:center;gap:2px;flex-wrap:wrap}
+.today-tools>button{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:2px 5px;font-size:12px;border-radius:4px}
+.today-tools>button:hover{background:var(--chip)}
+.today-tools .seg{padding:2px}.today-tools .seg button{padding:3px 8px;font-size:12px}
+.week-grid{--week-height:clamp(250px,34vh,360px);display:grid;grid-template-columns:36px repeat(var(--week-days),minmax(0,1fr));width:100%;min-width:0;padding:0 0 7px;font-size:12px}
+.week-corner{color:var(--faint);font-size:11px;padding-top:4px}
+.week-day-head{min-width:0;border-left:1px solid var(--line);padding:4px 3px 6px;max-height:112px;overflow-y:auto;overflow-x:hidden}
+.week-day-head>b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px}
+.week-day-head.is-today,.week-day.is-today{background:var(--accent-soft)}
+.week-chip{display:block;width:100%;min-width:0;text-align:left;border-radius:4px;padding:3px 4px;margin-top:3px;background:var(--warn-soft);color:var(--warn);line-height:1.35}
+.week-chip.exam{background:var(--chip);color:var(--ink)}
+.week-chip span,.week-chip small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.week-axis,.week-day{height:var(--week-height);position:relative;min-width:0}
+.week-axis span{position:absolute;right:4px;transform:translateY(-50%);font-size:10px;color:var(--faint);font-variant-numeric:tabular-nums}
+.week-day{border-left:1px solid var(--line)}
+.week-day:last-child{border-right:1px solid var(--line)}
+.week-rule{position:absolute;left:0;right:0;border-top:1px solid var(--line);pointer-events:none}
+.week-class{position:absolute;display:flex;flex-direction:column;align-items:stretch;gap:1px;min-width:0;text-align:left;border:1px solid rgb(var(--course-rgb));border-left-width:3px;border-radius:4px;background:var(--panel);padding:3px 4px;overflow:hidden;line-height:1.2;color:var(--ink);isolation:isolate}
+.week-class::before{content:"";position:absolute;inset:0;background:rgba(var(--course-rgb),.18);z-index:-1;pointer-events:none}
+.week-class strong,.week-class small,.week-kind{display:block;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.week-class strong{font-weight:600;font-size:12px}
+.week-class.cancelled{opacity:.5}.week-class.cancelled strong{text-decoration:line-through}
+.week-class.changed{border-style:dashed;border-left-width:2px}.week-kind{font-weight:600}
+/* text never leaves its block (user 2026-11-26): the block is its own size container, and lines that do not fit are
+   dropped in this order: room, then time, then the 휴강/보강 label (the title attribute always has everything) */
+.week-class{container-type:size;justify-content:flex-start}
+/* heights are of the block's inside (its padding and border are not counted): a line is about 14px */
+@container (max-height:55px){.week-room{display:none!important}}
+@container (max-height:41px){.week-class.changed .week-time,.week-class.cancelled .week-time{display:none!important}}
+@container (max-height:27px){.week-time,.week-kind{display:none!important}}
+@container (max-height:13px){.week-class strong{font-size:10px;line-height:1.1}}
+@container (max-width:70px){.week-class strong{font-size:11px}.week-time,.week-kind,.week-room{font-size:10px}}
+.week-class:hover,.week-class:focus-visible{z-index:3;outline:2px solid var(--accent);outline-offset:-2px}
+.week-now{position:absolute;left:0;right:0;height:1px;background:var(--rec);z-index:4;pointer-events:none}
+.week-now::before{content:"";position:absolute;left:-3px;top:-2px;width:5px;height:5px;border-radius:50%;background:var(--rec)}
+.week-empty{margin:4px 0 0;font-size:12px;color:var(--faint)}
+@media(max-width:720px){.today-card{margin:8px 6px 4px;padding:10px 8px}.today-card.with-week{max-height:none}.week-grid{grid-template-columns:30px repeat(var(--week-days),minmax(0,1fr))}.week-class{padding:2px}.week-day-head{padding-left:2px;padding-right:2px}}
 .home .phead{gap:4px}
 .home .phead b{font-size:15px}
 .home .phead .grow{flex:1}
@@ -498,12 +486,33 @@ body.home-view #r-tr{display:none!important}
 .td .what{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .td .what small{display:block;color:var(--faint);font-size:12px}
 .td .st{font-size:12px;color:var(--faint);white-space:nowrap}
-.td .hw-acts{display:flex;gap:6px}
-.td .mini{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--chip);color:var(--ink);white-space:nowrap}
 .todo .none{color:var(--faint);font-size:13px;padding:6px 10px}
+/* eTL submission state (D-077): 누락 in red, handed-in work folded under "제출함 N건", how old the stored list is */
+.td .dd.missing,.cal-side .up .dd.missing{color:var(--rec)}
+.td.miss .dd{background:var(--rec-soft);border-radius:6px;padding:1px 6px;text-align:center}
+.td.sub .what{color:var(--sub)}
+.late{color:var(--warn);font-weight:600}
+.todo .sl small.age,.cal-side .sl small.age{font-weight:400;color:var(--faint);margin-left:6px}
+.cal-side .sl.miss-h{color:var(--rec)}
+.cal-grid .ev.missing{background:var(--rec-soft);color:var(--rec);font-weight:600}
+.todo details.fold,.cal-side details.fold{margin:4px 0}
+.todo details.fold>summary,.cal-side details.fold>summary{list-style:none;display:flex;align-items:center;gap:8px;min-height:32px;padding:4px 6px;cursor:pointer;font-size:12px;color:var(--faint);border-radius:6px}
+.todo details.fold>summary::-webkit-details-marker,.cal-side details.fold>summary::-webkit-details-marker{display:none}
+.todo details.fold>summary svg.ic,.cal-side details.fold>summary svg.ic{flex:none;width:12px;height:12px;transition:transform .15s var(--ease)}
+.todo details.fold[open]>summary svg.ic,.cal-side details.fold[open]>summary svg.ic{transform:rotate(90deg)}
+.todo details.fold>summary .fold-n,.cal-side details.fold>summary .fold-n{color:var(--sub)}
+.todo details.fold>summary:hover,.cal-side details.fold>summary:hover{background:var(--panel-2)}
+.scrim.setup .etl-notify{display:flex;flex-direction:column;gap:2px;margin:8px 0}
+.scrim.setup .etl-notify b{font-size:13px;font-weight:600}
+.scrim.setup .etl-notify small{color:var(--sub)}
+.nb-item.warn-item .nb-head b{color:var(--warn)}
 
 /* second source on its own, next to the record button (user 2026-09-29) */
-.recrow{display:flex;align-items:center;gap:8px}
+.recrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;max-width:100%}
+/* a narrow column (the calendar's side panel, a small window): the second button and the tools go to the next row
+   instead of leaving the panel (user 2026-11-26) */
+.toolbar{flex-wrap:wrap;row-gap:4px}
+.recbtn{max-width:100%}
 .rec2{display:flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:999px;background:var(--chip);color:var(--ink);font-size:13px;font-weight:600;white-space:nowrap}
 .rec2[hidden]{display:none}
 .rec2 svg{width:15px;height:15px}
@@ -851,6 +860,70 @@ body:has(.qa-panel.with-deck) .cap-panel{display:none}
 .rail .rb.needs { opacity: .7; }
 .scrim.setup .labs { display: flex; flex-direction: column; gap: 4px; }
 .scrim.setup .labs small { color: var(--sub); }
+/* settings window (user 2026-11-25): the group menu on the left, one group at a time on the right. The window keeps
+   one size whatever the group, so switching does not move anything; only the right side scrolls. */
+.scrim.setup .dialog.wide.settings { width: min(880px, calc(100vw - 32px)); height: min(680px, calc(100vh - 48px)); max-height: none;
+  padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.settings .set-head { display: flex; align-items: center; gap: 8px; padding: 16px 20px 12px; border-bottom: 1px solid var(--line-2); }
+.settings .set-head h4 { margin: 0; }
+.settings .set-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 176px minmax(0, 1fr); }
+.settings .set-nav { display: flex; flex-direction: column; gap: 4px; padding: 12px 8px; border-right: 1px solid var(--line-2); background: var(--panel-2); overflow: auto; }
+.settings .set-tab { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 8px 12px; border: 0; border-radius: 8px; background: none;
+  color: var(--sub); font: inherit; font-size: 14px; text-align: left; cursor: pointer; transition: background-color .15s var(--ease), color .15s var(--ease); }
+.settings .set-tab:hover { background: var(--chip); color: var(--ink); }
+.settings .set-tab[aria-current] { background: var(--panel); color: var(--ink); font-weight: 600; box-shadow: var(--shadow-sm); }
+.settings .set-tab svg.ic { flex: none; width: 16px; height: 16px; }
+.settings .set-tab span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings .set-pane { min-height: 0; overflow: auto; padding: 4px 24px 24px; scrollbar-gutter: stable; }
+.settings .set-pane > h5:first-child { margin-top: 16px; }
+.settings .set-pane small { color: var(--sub); line-height: 1.5; }
+.settings .consent-row > span { min-width: 0; flex: 1; }
+.settings .consent-row small { margin-left: 4px; }
+.settings .set-pane h5 + p, .settings .set-pane h5 + small { margin-top: 0; }
+.scrim.setup .dialog.settings .acts { margin: 0; padding: 12px 20px; border-top: 1px solid var(--line-2); }
+.settings .err .ghost { margin-left: 4px; font-weight: 400; }
+@media (max-width: 640px) {  /* side view or a narrow window: the menu becomes a row on top */
+  .settings .set-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .settings .set-nav { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--line-2); padding: 8px; }
+  .settings .set-tab { min-height: 32px; padding: 4px 8px; font-size: 13px; }
+  .settings .set-pane { padding: 4px 16px 16px; }
+}
+/* settings: "all at once" beside a per-course list ([모두 선택]/[모두 해제], 모든 과목을 [상태]로 [적용]) */
+.scrim.setup .pick-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.scrim.setup .pick-head b { font-size: 13px; font-weight: 600; }
+.scrim.setup .pick-all { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.scrim.setup .pick-all label { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--sub); }
+.scrim.setup .pick-all button { border: 1px solid var(--line); background: var(--panel-2); border-radius: 8px; padding: 4px 12px; min-height: 30px; font-size: 13px; color: var(--ink); }
+.scrim.setup .pick-all button:hover:not(:disabled) { background: var(--chip); }
+.scrim.setup .pick-all button:disabled, .scrim.setup .pick-all select:disabled { opacity: .5; cursor: default; }
+.scrim.setup .pick-all select { font: inherit; font-size: 13px; color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 4px; }
+/* settings: one fold pattern (details + a summary that says what is inside and how many); open state kept per key */
+.scrim.setup details.fold { margin: 4px 0; }
+.scrim.setup details.fold > summary { list-style: none; display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 4px 0; cursor: pointer;
+  font-size: 13px; font-weight: 600; color: var(--ink); border-radius: 4px; }
+.scrim.setup details.fold > summary::-webkit-details-marker { display: none; }
+.scrim.setup details.fold > summary svg.ic { flex: none; width: 14px; height: 14px; color: var(--sub); transition: transform .15s var(--ease); }
+.scrim.setup details.fold[open] > summary svg.ic { transform: rotate(90deg); }
+.scrim.setup details.fold > summary .fold-n { font-weight: 400; color: var(--sub); }
+.scrim.setup details.fold > .fold-body { padding: 0 0 4px 20px; }
+.scrim.setup details.fold.more { margin: 0 0 4px; }
+.scrim.setup details.fold.more > summary { min-height: 24px; padding: 0; font-weight: 400; font-size: 12px; color: var(--accent); }
+.scrim.setup details.fold.more > .fold-body { padding-left: 20px; }
+.scrim.setup details.fold.more > .fold-body small, .scrim.setup small.more-head { display: block; color: var(--sub); }
+.scrim.setup details.fold.more > .fold-body p { margin: 0 0 4px; }
+/* settings: AI app link (D-072) */
+.scrim.setup .ailink { display: flex; flex-direction: column; gap: 4px; }
+.scrim.setup .ailink small { color: var(--sub); }
+.scrim.setup .ailink > b { margin-top: 8px; font-size: 13px; font-weight: 600; }
+.scrim.setup .ailink-courses { display: flex; flex-wrap: wrap; gap: 0 16px; }
+.scrim.setup .ailink-snip { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 8px; }
+.scrim.setup .ailink-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.scrim.setup .ailink-head b { font-size: 13px; font-weight: 600; }
+.ailink-code { margin: 0; padding: 8px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line-2); font: 12px/1.6 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; word-break: break-all; color: var(--ink); max-height: 160px; overflow: auto; user-select: text; }
+.scrim.setup .ailink-app > span:first-child { min-width: 0; flex: 1 1 280px; }
+.scrim.setup .ailink-app .path { overflow-wrap: anywhere; }  /* a long settings-file path wraps instead of widening the pane */
+.scrim.setup .ailink-open { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0; }
+.ailink-copy-area { position: fixed; top: 0; left: 0; width: 4px; height: 4px; opacity: 0; pointer-events: none; }
 
 /* Public booking: room is chosen before the native confirmation sheet. */
 .room-form input{font:inherit;border:1px solid var(--line);border-radius:8px;padding:4px 8px;background:var(--panel);color:var(--ink)}
@@ -980,6 +1053,20 @@ body:has(.qa-panel.with-deck) .cap-panel{display:none}
 .hq-empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:36px 12px;color:var(--sub);text-align:center}
 .hq-empty b{color:var(--ink);font-size:15px}
 .hq-empty .ghost{margin-top:6px;border:1px solid var(--line);border-radius:999px;padding:6px 16px}
+/* HOLD-006: the app's recommendation on a card, and what its first pass took out */
+.hq-rec{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;margin:0 0 10px;padding:8px 12px;border-radius:8px;background:var(--accent-soft);font-size:13px;line-height:1.5}
+.hq-rec svg{width:14px;height:14px;color:var(--accent);align-self:center}
+.hq-rec span{color:var(--sub)}
+.hq-choices .choice.rec{border-color:var(--accent)}
+.hq-choices .choice small{font-weight:400;color:var(--accent);margin-left:4px}
+.hq-auto{margin-top:14px;font-size:13px;color:var(--sub)}
+.hq-auto summary{cursor:pointer;font-weight:600;color:var(--ink)}
+.hq-auto summary small{font-weight:400;color:var(--faint);margin-left:6px}
+.hq-auto ul{list-style:none;margin:8px 0 0;padding:0;max-height:240px;overflow:auto}
+.hq-auto li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:6px 0;border-top:1px solid var(--line-2)}
+.hq-auto li b{font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hq-auto li span:not(.link){grid-column:1;font-size:12px;color:var(--faint)}
+.hq-auto li .link{grid-column:2;grid-row:1;color:var(--accent);cursor:pointer;white-space:nowrap}
 /* settings: folder layout with its tree, recording cleanup */
 .layout-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:12px;align-items:start;margin:6px 0 8px}
 .layout-opts{display:flex;flex-direction:column;gap:6px}
@@ -1021,22 +1108,7 @@ body:has(.qa-panel.with-deck) .cap-panel{display:none}
 .cmsg.ok { color: var(--accent); opacity: 1; }
 .cmsg.bad { color: var(--rec); opacity: 1; font-weight: 600; }
 .cmsg.warn { color: var(--warn); opacity: 1; }
-/* 그스룸 함께 쓰는 사람: 이름 | 연도 - 뒷자리 (2026-11-14) */
-.room-mates { margin: 8px 0 4px; }
-.mates { display: grid; gap: 6px; margin: 6px 0 4px; }
-.mate { display: grid; grid-template-columns: auto 4.4em auto 5.4em 32px; justify-content: start; align-items: center; gap: 6px; }
-.mate input.ask, .dialog .mate input.ask { width: 100%; min-width: 0; max-width: 12em; margin: 0; box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--panel-2); color: var(--ink); font: inherit; font-size: 14px; }
-.mate .m-y, .mate .m-n { font-variant-numeric: tabular-nums; text-align: center; }
-.mate .m-dash { color: var(--sub); }
-.mate .m-del, .mate .ibtn.m-del { width: 32px; height: 32px; min-width: 32px; min-height: 32px; border-radius: 8px; }
-.m-add { margin: 2px 0 6px; }
-.gsrc { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; }
-.gsrc > small { color: var(--sub); line-height: 1.45; }
-.gsr-rooms { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
-.gsr-rooms label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.gsr-rooms input.ask, .dialog .gsr-rooms input.ask { width: 9em; margin: 0; }
-.gsr-rooms input.ask.short, .dialog .gsr-rooms input.ask.short { width: 5em; }
-.gsr-rooms select { font: inherit; color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 4px; }
+
 /* layout audit 2026-11-14: short labels never break in two, rows keep their columns */
 .pill, .num { white-space: nowrap; }
 .scrim.setup table.tools td:first-child { white-space: nowrap; }
@@ -1069,3 +1141,86 @@ body:has(.qa-panel.with-deck) .cap-panel{display:none}
 .recmini.on .dot { background: var(--rec); }
 
 .mate input.m-name, .dialog .mate input.m-name { width: 4.6em; text-align: center; }
+
+/* D-081: week + full month on the left, day/live in the existing right surface.
+   Only the week timeline scrolls; the month's 4–6 rows always have room. */
+body.home-view .center > .home{display:grid;grid-template-rows:minmax(0,1fr) auto;gap:10px;border:0;box-shadow:none;background:none;overflow:auto}
+.today-card.with-week{display:flex;flex-direction:column;min-height:0;max-height:none;margin:0;padding:10px 12px 6px;border:1px solid var(--line-2);border-radius:var(--r);overflow:hidden}
+.today-head{flex:none;min-height:32px;margin-bottom:8px}
+.today-head h3,.home-month .phead b{font-size:14px;font-weight:600}
+.today-head h3 small{font-size:12px}
+.week-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:5px 0 7px;scrollbar-gutter:stable}
+.week-day-head,.week-corner{position:sticky;top:-5px;z-index:5;background:var(--panel)}
+.week-day-head.is-today{background:var(--accent-soft)}
+.week-axis span:first-child{transform:none}
+.week-axis span:last-child{transform:translateY(-100%)}
+.home-month{display:flex;flex-direction:column;min-width:0;min-height:var(--month-min,300px);background:var(--panel);border:1px solid var(--line-2);border-radius:var(--r);overflow:hidden}
+.home-month .phead{flex:none;padding:8px 12px;min-height:45px}
+.home-month .phead .ghost{font-size:12px;white-space:nowrap}
+.home-month .home-grid{grid-template-columns:repeat(7,minmax(0,1fr));grid-template-rows:20px;grid-auto-rows:minmax(32px,1fr);gap:3px;padding:5px 10px 10px;overflow:visible;min-height:0}
+.home-month .day{min-width:0;min-height:32px;padding:2px 4px;gap:0;position:relative}
+.home-month .day .n,.home-month .day .more{font-size:11px;line-height:16px}
+.home-month .day .more{position:absolute;top:1px;right:3px;color:var(--accent)}
+.home-month .day .ev,.home-month .day .ex{font-size:10px;line-height:13px;padding:0 2px;flex:none}
+.home-checks{font-size:12px;text-align:left;padding:3px 12px 7px;color:var(--accent)}
+.week-chip,.week-chip.exam,.home-month .day .ev:not(.missing),.home-month .day .ex{border-left:2px solid rgb(var(--course-rgb));background:rgba(var(--course-rgb),.13);color:var(--ink)}
+:root[data-theme] .home-month .day .ev:not(.missing){background:rgba(var(--course-rgb),.13);color:var(--ink)}
+body.home-view .body > .right > .phead{flex:none;min-height:49px}
+body.home-view .body > .right > .phead .seg{background:none;padding:0}
+body.home-view .body > .right > .phead .seg button{background:none;box-shadow:none;font-size:14px;padding:0;font-weight:600}
+body.home-view .top .right{overflow:visible;flex-wrap:wrap}
+body.home-view .dock{flex-shrink:0}
+body.home-view .todo{display:none}
+.body > .right > #c-live{flex:1;min-height:0;overflow:hidden}
+.day-view .live-head{min-height:44px;padding:8px 16px}
+.day-view .live-head b{font-size:14px;font-weight:600;color:var(--ink)}
+.day-view .live-head .num{font-size:12px;font-weight:400;color:var(--sub);margin-left:6px}
+.day-view .live-body{padding:8px 12px 12px;line-height:1.5;min-height:0}
+.day-view h4{font-size:12px;font-weight:600;color:var(--sub);margin:12px 4px 6px}
+.day-view h4.urgent{color:var(--rec)}  /* "D-DAY 마감" while something is due (user 2026-11-26) */
+.day-row{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border-left:3px solid rgb(var(--course-rgb));border-radius:4px;background:rgba(var(--course-rgb),.08);padding:9px 8px;margin:5px 0;min-width:0;font-size:13px}
+.day-row:hover{background:rgba(var(--course-rgb),.17)}
+.day-time{font-size:12px;white-space:nowrap;flex:none;color:var(--sub)}
+.day-what{min-width:0;overflow-wrap:anywhere}
+.day-what strong{display:block;font-size:13px;font-weight:600}
+.day-what small{display:block;font-size:12px;color:var(--sub)}
+.day-chip{display:inline-block;font-size:11px!important;color:var(--ink)!important;background:rgba(var(--course-rgb),.13);border-radius:4px;padding:2px 5px;flex:none}
+.day-row.cancelled{opacity:.55}.day-row.cancelled strong,.day-row.cancelled .day-time{text-decoration:line-through}
+.day-view .hint,.day-empty{font-size:13px;color:var(--sub);margin:8px 4px}
+@media(min-width:901px){body.home-view .body.noside{grid-template-columns:minmax(0,1fr) minmax(280px,25%)}}
+@media(max-width:900px){
+  body.home-view .app{height:auto;min-height:100vh;grid-template-columns:56px minmax(0,1fr)}
+  body.home-view .rail{position:sticky;top:0;height:100vh;overflow-y:auto}
+  body.home-view .body,body.home-view .body.noside{grid-template-columns:minmax(0,1fr);overflow:visible;padding-right:8px}
+  body.home-view .body > .right{order:-1;height:clamp(460px,74vh,560px)}
+  body.home-view .center{grid-template-rows:auto}
+  body.home-view .center > .home{grid-template-rows:auto auto;overflow:visible;min-height:0}
+  #home[data-mode="week"] .today-card.with-week{height:clamp(320px,56vh,520px)}
+  #home[data-mode="month"] .home-month{min-height:clamp(340px,60vh,560px)}
+  .home-month{min-height:340px}
+  .home-month .home-grid{flex:none;grid-auto-rows:minmax(43px,auto)}
+  .day-view .live-body{min-height:0}
+  .today-head{gap:4px}.today-head h3 small{display:block;font-size:11px}
+  .today-tools>button{min-height:32px;padding:2px 4px}
+  .home-month .phead{padding:6px;gap:2px}
+  .home-month .home-grid{padding:4px 5px 8px;gap:2px}
+  .home-month .day{padding:2px}
+}
+
+/* Home, left side: the week or the month, one at a time (user 2026-11-26: both together left the month too little
+   room). The switch sits in both headers; the week is the default on every start. */
+#home[data-mode="week"] .home-month{display:none}
+#home[data-mode="month"] .today-card{display:none}
+#home:not([data-mode]) .home-month{display:none}
+.home-mode{flex:none;margin-right:6px}
+.home-mode button{font-size:12px;padding:3px 10px}
+.home-month .home-grid{grid-auto-rows:minmax(44px,1fr)}
+.home-month .day{overflow:hidden;gap:1px}
+.home-month .day .ev,.home-month .day .ex{flex:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;line-height:15px;padding:0 3px;border-radius:3px}
+.home-checks{justify-self:stretch}
+
+/* D-086: first-run wizard, the timetable step's other ways (Codex) and the line shown while Codex works */
+.scrim.setup .setup-ways { margin: 8px 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.scrim.setup .setup-ways p { margin: 0 0 6px; }
+.scrim.setup .setup-ways .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+.scrim.setup .setup-wait { padding: 8px 10px; border-radius: 6px; background: var(--accent-soft); }

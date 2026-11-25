@@ -9,7 +9,7 @@ Lecture Hub is MIT-licensed. It uses these components at run time (all permissiv
 | httpx, websockets, google-cloud-speech | BSD / Apache-2.0 | speech services |
 | pypdfium2 (PDFium) | Apache-2.0 / BSD-3-Clause | reading PDF text and page images |
 | Pillow | HPND | page images |
-| python-pptx, olefile | MIT / BSD | slides, HWP text |
+| python-pptx | MIT | slides |
 | FastAPI, uvicorn, Jinja2, pywebview | MIT / BSD | window and local pages |
 | Pretendard font (src/lecturehub/ui/web/fonts) | SIL OFL 1.1 | UI font; license text included in that folder |
 

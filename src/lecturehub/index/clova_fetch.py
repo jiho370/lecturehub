@@ -190,7 +190,7 @@ def sync(connection: sqlite3.Connection, root: Path, *, limit: int = 3, stop=Non
 
     Safe to run again and again: notes already fetched (note id) and recordings already in the app or the stage
     folder (sha256) are skipped. ``execute`` stands in for the browser in tests (script → stdout or error dict)."""
-    from lecturehub.booking import aside_cli
+    from lecturehub.core import aside_cli
 
     from . import clova_script
 

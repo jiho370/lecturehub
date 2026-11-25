@@ -198,7 +198,7 @@ def test_CLOVA_006_weekly_check_is_due_after_seven_days_or_a_day_after_a_failure
 
 
 def test_CLOVA_006_app_weekly_check_runs_only_when_due_and_one_at_a_time(tmp_path, monkeypatch):
-    from lecturehub.booking import aside_cli
+    from lecturehub.core import aside_cli
     from lecturehub.core import settings
     from lecturehub.ui import library as library_module
     from lecturehub.ui.app import Api

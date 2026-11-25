@@ -48,6 +48,17 @@ def load() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def load_strict() -> dict | None:
+    """settings.json exactly as it is, for a reader that must fail closed (the AI app link's process, D-072):
+    ``None`` when it is missing, unreadable, broken or not an object. Never falls back on ``settings.json.bak``
+    (after "switch off" that copy may still say "on") and never writes anything (no ``.corrupt-*`` copy)."""
+    try:
+        data = json.loads(settings_path().read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _recover(path: Path) -> dict:
     from . import applog
 
@@ -142,23 +153,164 @@ def course_abbreviations() -> dict[str, str]:
     return {str(k).strip(): str(v).strip() for k, v in stored.items() if str(k).strip() and str(v).strip()}
 
 
-LABS = {"gsr": "그스룸 예약", "memorizer": "단어 암기장", "clova": "Clova 가져오기"}  # optional features, off until switched on
+LABS = {"gsr": "그스룸 예약", "clova": "Clova 가져오기"}  # optional features, off until switched on
 
 
 def labs() -> dict[str, bool]:
     """Which optional features are on. A new install has them all off; the owner's settings.json turns them on."""
     stored = load().get("labs")
     stored = stored if isinstance(stored, dict) else {}
-    return {name: bool(stored.get(name, False)) for name in LABS}
+    from . import edition
+
+    return {name: bool(stored.get(name, False)) for name in LABS if edition.has(name)}
 
 
 def set_lab(name: str, on: bool) -> dict[str, bool]:
-    if name not in LABS:
+    from . import edition
+
+    if name not in LABS or not edition.has(name):
         raise KeyError(name)
     current = labs()
     current[name] = bool(on)
     save({"labs": current})
     return current
+
+
+# ---------- AI app link (D-072): the master switch of the read-only MCP server (lecturehub.mcp). Off on a new install.
+def ai_link() -> dict:
+    """{"enabled", "write"}. Read on every tool call of the MCP process, so turning either off applies at once.
+    ``write`` (D-076, "AI 앱이 고칠 수 있게") lets the AI app add/change calendar items and save new notes; it counts
+    only while ``enabled`` is on too (the MCP process reads both strictly, ``mcp/access.py``)."""
+    saved = load().get("ai_link")
+    saved = saved if isinstance(saved, dict) else {}
+    return {"enabled": saved.get("enabled") is True, "write": saved.get("write") is True}
+
+
+def set_ai_link(enabled: bool) -> dict:
+    """The master switch; the write switch keeps its value (it applies again when the link is turned back on)."""
+    saved = load().get("ai_link")
+    saved = saved if isinstance(saved, dict) else {}
+    save({"ai_link": {**saved, "enabled": bool(enabled)}})
+    return ai_link()
+
+
+def set_ai_link_write(write: bool) -> dict:
+    saved = load().get("ai_link")
+    saved = saved if isinstance(saved, dict) else {}
+    save({"ai_link": {**saved, "write": bool(write)}})
+    return ai_link()
+
+
+# D-080: per kind of change (= write tool of the AI app link), whether Lecture Hub still asks on screen (false, the
+# default) or lets it apply at once (true). ``ai_link.auto`` = {kind: true}; read strictly by the MCP process.
+AI_AUTO_KINDS = ("add_calendar_event", "update_calendar_event", "delete_calendar_event", "resolve_candidate", "save_note",
+                 "set_timetable", "add_schedule_change", "set_reminder_settings",
+                 "request_notice_rescan")  # D-083 kinds after the first five
+
+
+def _auto_table(saved) -> dict[str, bool]:
+    table = saved.get("auto") if isinstance(saved, dict) else None
+    table = table if isinstance(table, dict) else {}
+    return {kind: table.get(kind) is True for kind in AI_AUTO_KINDS}
+
+
+def ai_link_auto(*, saved: dict | None = None) -> dict[str, bool]:
+    """Optional strict snapshot for the read-only MCP inspector (never recover a broken file there)."""
+    return _auto_table((load() if saved is None else saved).get("ai_link"))
+
+
+def set_ai_link_auto(kind: str, on: bool) -> dict[str, bool]:
+    """The app's settings rows. Turning a kind to automatic needs the native dialog's token (``ui/app.py``)."""
+    if kind not in AI_AUTO_KINDS:
+        raise KeyError(kind)
+    saved = load().get("ai_link")
+    saved = saved if isinstance(saved, dict) else {}
+    table = _auto_table(saved)
+    table[kind] = bool(on)
+    save({"ai_link": {**saved, "auto": {k: True for k, v in table.items() if v}}})
+    return ai_link_auto()
+
+
+def set_ai_link_auto_all() -> dict[str, bool]:
+    """[모두 자동]: every kind automatic (the native dialog's token is checked in ``ui/app.py``)."""
+    saved = load().get("ai_link")
+    saved = saved if isinstance(saved, dict) else {}
+    save({"ai_link": {**saved, "auto": {kind: True for kind in AI_AUTO_KINDS}}})
+    return ai_link_auto()
+
+
+def reset_ai_link_auto() -> dict[str, bool]:
+    """[모두 다시 묻기]."""
+    saved = load().get("ai_link")
+    saved = saved if isinstance(saved, dict) else {}
+    save({"ai_link": {**saved, "auto": {}}})
+    return ai_link_auto()
+
+
+def save_ai_link_auto_strict(kind: str) -> bool:
+    """[이 종류는 앞으로 자동] pressed in the MCP process's dialog: mark ``kind`` automatic, reading the file strictly
+    (a missing or broken file, or a switch turned off meanwhile, writes nothing and returns False) and replacing it
+    atomically through a temporary file of its own name. The previous file is kept as ``settings.json.bak`` as
+    ``save`` does."""
+    if kind not in AI_AUTO_KINDS:
+        return False
+    data = load_strict()
+    saved = data.get("ai_link") if data is not None else None
+    if not isinstance(saved, dict) or saved.get("enabled") is not True or saved.get("write") is not True:
+        return False
+    table = _auto_table(saved)
+    table[kind] = True
+    data["ai_link"] = {**saved, "auto": {k: True for k, v in table.items() if v}}
+    return _replace_strict(data)
+
+
+AI_WRITABLE_SETTINGS = ("reminders",)  # D-083: the only keys an AI app may change (set_reminder_settings)
+
+
+def save_from_ai_strict(key: str, value) -> bool:
+    """D-083 ``set_reminder_settings`` (the MCP process): one of ``AI_WRITABLE_SETTINGS`` replaced, read strictly like
+    ``save_ai_link_auto_strict`` — a missing or broken file, or the link or the write switch off, writes nothing and
+    returns False."""
+    if key not in AI_WRITABLE_SETTINGS:
+        return False
+    data = load_strict()
+    saved = data.get("ai_link") if data is not None else None
+    if not isinstance(saved, dict) or saved.get("enabled") is not True or saved.get("write") is not True:
+        return False
+    data[key] = value
+    return _replace_strict(data)
+
+
+def _replace_strict(data: dict) -> bool:
+    import tempfile
+
+    path = settings_path()
+    try:
+        previous = path.read_bytes()
+        handle, part = tempfile.mkstemp(prefix=path.name + ".", suffix=".part", dir=path.parent)
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as out:
+                out.write(json.dumps(data, ensure_ascii=False, indent=2))
+                out.flush()
+                os.fsync(out.fileno())
+            path.with_name(path.name + ".bak").write_bytes(previous)
+            for attempt in range(5):  # the app may be reading the file this very moment (Windows sharing)
+                try:
+                    os.replace(part, path)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.05)
+        except BaseException:
+            try:
+                os.unlink(part)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        return False
+    return True
 
 
 MIN_COMPANIONS = 3  # 그스룸 needs 4 people; the applicant (the signed-in account) is added by the site script

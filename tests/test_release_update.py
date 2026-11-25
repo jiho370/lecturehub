@@ -103,7 +103,7 @@ def test_launcher_tells_the_user_when_the_window_cannot_start(monkeypatch, tmp_p
     monkeypatch.setattr(webview2, "version", lambda read=None: "157.0")
     import lecturehub.ui.app as app
 
-    def broken():
+    def broken(**kwargs):
         raise RuntimeError("합성 시작 실패")
 
     monkeypatch.setattr(app, "main", broken)

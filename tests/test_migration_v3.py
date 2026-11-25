@@ -292,7 +292,7 @@ def test_populated_v1_upgrades_through_v2_and_v3_with_a_v1_backup(tmp_path):
         for table in ("Transcript", "TranscriptSegment", "Event"):
             columns = [row[1] for row in connection.execute(f"PRAGMA table_info({table})")]
             before[table] = (columns, [tuple(row) for row in connection.execute(f"SELECT * FROM {table}")])
-        assert db.migrate(connection) == [2, 3, 4, 5, 6, 7, 8]
+        assert db.migrate(connection) == [2, 3, 4, 5, 6, 7, 8, 9]
         for table, (columns, rows) in before.items():
             assert [tuple(row) for row in connection.execute(f"SELECT {','.join(columns)} FROM {table}")] == rows
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

@@ -10,6 +10,7 @@ import csv
 import io
 import json
 import re
+import unicodedata
 from datetime import date, datetime
 from pathlib import Path
 
@@ -26,11 +27,23 @@ class TimetableError(ValueError):
     """The entered timetable or term is not usable; the message is shown to the user."""
 
 
+# Windows device names (a folder "NUL" or "com1.txt" is not a folder) and the app's own folders at the data root
+DEVICES = frozenset({"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))})
+APP_FOLDERS = frozenset({"미분류", "녹음본", "전사본"})
+
+
 def folder_name(name: str) -> str:
-    cleaned = _BAD.sub(" ", name or "").strip().rstrip(". ")
+    raw = name or ""
+    if any(unicodedata.category(ch) in ("Cc", "Cf") and ch not in " \t" for ch in raw):
+        # control and format/bidi characters (review M3): the folder would not be the name the user saw; a tab from
+        # the app's own editor is still turned into a space below
+        raise TimetableError(f"과목 이름에 쓸 수 없는 글자가 있습니다: {raw!r}")
+    cleaned = _BAD.sub(" ", raw).strip().rstrip(". ")
     cleaned = re.sub(r"\s+", " ", cleaned)
     if not cleaned or cleaned in {".", ".."} or cleaned.startswith("_") or len(cleaned) > 60:
         raise TimetableError(f"과목 이름을 쓸 수 없습니다: {name!r}")
+    if cleaned.split(".")[0].strip().upper() in DEVICES or unicodedata.normalize("NFC", cleaned) in APP_FOLDERS:
+        raise TimetableError(f"과목 이름으로 쓸 수 없는 이름입니다(Windows나 앱이 쓰는 이름): {cleaned}")
     return cleaned
 
 

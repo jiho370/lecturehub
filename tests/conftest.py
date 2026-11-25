@@ -28,8 +28,23 @@ def _isolated_user_settings(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("LECTUREHUB_AGENT_WORKSPACE", str(path.parent / "agent-workspace"))
     monkeypatch.setenv("LECTUREHUB_LOG_DIR", str(path.parent / "logs"))  # never the real %LOCALAPPDATA% log (core/applog.py)
     monkeypatch.setenv("LECTUREHUB_UPDATE_REPO", "")  # no test asks GitHub for a newer version (core/update.py)
+    # [Codex에 연결] / [Claude 데스크톱에 연결] (D-076): never the user's real config.toml or Claude settings file
+    monkeypatch.setenv("CODEX_HOME", str(path.parent / "codex-home"))
+    monkeypatch.setenv("LECTUREHUB_CLAUDE_DESKTOP_CONFIG", str(path.parent / "claude" / "claude_desktop_config.json"))
     monkeypatch.delenv("LECTUREHUB_ROOT", raising=False)
     monkeypatch.delenv("LECTUREHUB_AI_ENGINE", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_confirmation_dialog(monkeypatch):
+    """D-080: no test ever shows the AI app link's native confirmation dialog. Unanswered here means "the dialog
+    could not be shown" (nothing changes); a test that needs an answer replaces ``approve.dialog`` itself. Child
+    processes do not get this: their tests set the kinds to automatic in settings instead."""
+    from lecturehub.mcp import approve
+
+    monkeypatch.setattr(approve, "dialog", lambda *args, **kwargs: approve.FAILED)
+    monkeypatch.setattr(approve, "notice", lambda *args, **kwargs: None)  # D-083 M1: the OK-only notice, never real
+    monkeypatch.setattr(approve, "_last_notice", [float("-inf")])
 
 
 @pytest.fixture(autouse=True)

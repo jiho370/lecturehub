@@ -49,7 +49,8 @@ def run(argv: list[str] | None = None, *, show=message_box) -> int:
             return 2
         from lecturehub.ui.app import main
 
-        return int(main() or 0)
+        background = "--background" in argv or Path(sys.executable).stem.casefold() == "lecturehubstartup"
+        return int(main(background=background) or 0)
     except SystemExit:
         raise
     except BaseException:  # noqa: BLE001 - the user must be told, whatever it was

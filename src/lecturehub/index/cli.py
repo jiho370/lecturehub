@@ -13,6 +13,7 @@ import typer
 from lecturehub.core import db
 from lecturehub.core.paths import app_dir
 from lecturehub.core.timeutil import format_timestamp
+from lecturehub.materials.units import is_chunked
 
 
 def _json(value: object) -> str:
@@ -96,16 +97,10 @@ def _recording_busy(root: Path) -> str | None:
 
 
 def register(app: typer.Typer) -> None:
-    from lecturehub.core import edition
-
     from . import clova_cli, lecture_cli, organize_cli, quiz_cli, schedule_cli
 
     schedule_cli.register(app)
     lecture_cli.register(app)
-    if edition.has("assignment"):  # the public edition has no assignment helper (module deleted at export)
-        from . import assignment_cli
-
-        assignment_cli.register(app)
     organize_cli.register(app)
     quiz_cli.register(app)
     clova_cli.register(app)
@@ -169,7 +164,7 @@ def register(app: typer.Typer) -> None:
         for result in results:
             position = format_timestamp(result.start_ms) if result.start_ms is not None else "시각 없음"
             if result.page_no is not None:
-                position = f"p.{result.page_no}"
+                position = f"구간 {result.page_no}" if is_chunked(result.path) else f"p.{result.page_no}"
             typer.echo(f"{result.course} · {result.date or '-'} · {position} · {result.engine or result.source_kind}")
             if result.no_media:
                 typer.echo("  연결된 원음 없음 (no_media)")

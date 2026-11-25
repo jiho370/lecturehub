@@ -7,7 +7,8 @@ from lecturehub.core import settings
 from lecturehub.parsers.dedupe import sha256_file
 
 AUDIO_EXTENSIONS = {".m4a", ".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma"}
-MATERIAL_EXTENSIONS = {".pdf", ".ppt", ".pptx", ".pps", ".ppsx", ".hwp", ".hwpx"}
+# .docx since D-078 (its text is read like .hwp/.hwpx: materials/doctext.py)
+MATERIAL_EXTENSIONS = {".pdf", ".ppt", ".pptx", ".pps", ".ppsx", ".hwp", ".hwpx", ".docx"}
 NOTE_FOLDERS = {"정리본"}  # compared without spaces; older names come from settings (legacy_note_folders)
 
 

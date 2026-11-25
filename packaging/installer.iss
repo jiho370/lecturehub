@@ -7,7 +7,7 @@
 ;   removed first (no stale module of an older version stays behind);
 ; - uninstall removes the program only. The semester folder, the settings (%APPDATA%\LectureHub) and the logs
 ;   (%LOCALAPPDATA%\LectureHub) stay, and the last page says where they are;
-; - the app holds the mutex "LectureHub.AppRunning" while its window is open (core/single_instance.py): setup and
+; - the app holds the mutex "LectureHub.AppRunning" while it runs, including hidden (core/single_instance.py): setup and
 ;   uninstall ask the user to close it instead of replacing files under a running recording.
 
 #ifndef AppVersion
@@ -95,7 +95,15 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  StartupCommand: String;
 begin
+  { Only remove this install's opt-in Run entry; another zip/install may own the value now. }
+  if (CurUninstallStep = usUninstall) and
+     RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'LectureHub', StartupCommand) then
+    if (CompareText(StartupCommand, '"' + ExpandConstant('{app}\LectureHub.exe') + '" --background') = 0) or
+       (CompareText(StartupCommand, ExpandConstant('{app}\LectureHub.exe') + ' --background') = 0) then
+      RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'LectureHub');
   if (CurUninstallStep = usPostUninstall) and not UninstallSilent() then
     MsgBox(FmtMessage(CustomMessage('DataKept'), [ExpandConstant('{userappdata}\LectureHub'), ExpandConstant('{localappdata}\LectureHub')]),
            mbInformation, MB_OK);
