@@ -68,7 +68,7 @@ def run(*, window: bool = False, keep: bool = False) -> dict:
         _step(results, "문제 보고 파일", lambda: _report(scratch, root_holder.get("root")))
         if window:  # last: it points the temporary settings at the trial semester
             _step(results, "실제 화면 걷기(숨김 창: 회차·녹음·정리본·설정·알림 때 만드는 미니 창·주소 고정)",
-                  lambda: _window(trial.get("root")))
+                  lambda: _window(trial.get("root"), trial.get("lecture_id")))
         _step(results, "앱 모듈 모두 불러오기", _all_modules)  # after the window, so its start-up time stays comparable
     finally:
         for name, value in saved.items():
@@ -213,6 +213,7 @@ def _trial(scratch: Path, holder: dict) -> str:
     if made.get("state") not in ("made", "ready"):
         raise RuntimeError(f"예시 학기 상태: {made.get('state')}")
     holder["root"] = Path(made["root"])
+    holder["lecture_id"] = made.get("lecture_id")  # the lecture with sound, slides and a note
     return str(made.get("state"))
 
 
@@ -286,10 +287,13 @@ READY_WAIT_S = 120.0  # a cold WebView2 on a busy build machine is slow; a healt
 # what the hidden window is asked, in order. Each is one expression: ``do`` is repeated until it answers 'ok' (the
 # thing to press is drawn a moment after the page is ready), then ``wait`` is polled until it is true.
 _WALK = (
-    {"name": "과목 펼치기", "do": "(function(){var e=document.querySelector('#courseList [data-toggle]');"
+    # CRS_SEL / LEC_SEL: the example course and the lecture that has the note (see _walk_step). The first course in
+    # the list is today's course and its newest lecture may have no note, so the walk failed on some weekdays
+    # (a Thursday build, 2026-11-26).
+    {"name": "과목 펼치기", "do": "(function(){var e=document.querySelector(CRS_SEL);"
                                "if(!e)return 'none';if(!e.classList.contains('open'))e.click();return 'ok'})()",
-     "wait": "!!document.querySelector('#courseList [data-lecture]')"},
-    {"name": "회차 열기", "do": "(function(){var e=document.querySelector('#courseList [data-lecture]');"
+     "wait": "!!document.querySelector(LEC_SEL)"},
+    {"name": "회차 열기", "do": "(function(){var e=document.querySelector(LEC_SEL);"
                               "if(!e)return 'none';e.click();return 'ok'})()",
      "wait": "document.getElementById('lvList') && document.getElementById('lvList').style.display !== 'none'"},
     # A window that was never shown does not load sound at all (WebView2 keeps <audio> at "loading" while the page is
@@ -321,7 +325,18 @@ _LEAVE_TO = "http://127.0.0.1:9/lecturehub-selfcheck-leave"
 _STILL_HOME = "window.__lecturehubReady === true && location.pathname.indexOf('index.html') >= 0"
 
 
-def _window(trial_root: Path | None = None) -> str:
+def _walk_step(step: dict, lecture_id: str | None) -> dict:
+    """One walk step with the selectors filled in: the example course, and the lecture with the note when known."""
+    from lecturehub.core import timetable
+    from lecturehub.index import demo
+
+    course = f'#courseList [data-toggle="{timetable.folder_name(demo.COURSE)}"]'
+    lecture = f'#courseList [data-lecture="{lecture_id}"]' if lecture_id else f"{course} + .subs [data-lecture]"
+    return {key: value.replace("CRS_SEL", json.dumps(course)).replace("LEC_SEL", json.dumps(lecture))
+            if isinstance(value, str) else value for key, value in step.items()}
+
+
+def _window(trial_root: Path | None = None, lecture_id: str | None = None) -> str:
     """Hidden windows with the REAL pages and the REAL API on the trial semester (fake sound engine): the main page
     must finish starting, open a lecture with its sound and its note, and open the settings, without one thing
     being blocked by the page's own security policy and without a script error; the small recording window must
@@ -379,7 +394,7 @@ def _window(trial_root: Path | None = None) -> str:
                 seen["error"] = f"화면이 {int(READY_WAIT_S)}초 안에 준비되지 않았습니다"
                 return
             seen["ready_s"] = round(time.monotonic() - started, 1)
-            for step in _WALK if trial_root is not None else ():
+            for step in (_walk_step(s, lecture_id) for s in _WALK) if trial_root is not None else ():
                 if not until(f"({step['do']}) === 'ok'", 40):
                     seen["error"] = f"{step['name']}: 누를 것이 화면에 없습니다"
                     return

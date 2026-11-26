@@ -392,7 +392,7 @@ def test_blank_course_transcription_asks_each_time_and_passes_consent_once(semes
 def test_S2_auto_transcription_only_for_a_real_course_with_user_consent(semester, monkeypatch):
     app = Backend(clock=tuesday, fake_engine=True)
     started = []
-    monkeypatch.setattr(app, "transcription_start", lambda consent, master=None, course=None: started.append(
+    monkeypatch.setattr(app, "transcription_start", lambda consent, master=None, course=None, **_: started.append(
         (master, course)) or {"ok": True})
     consent = semester / "_lecturehub" / "consent.json"
     consent.parent.mkdir(parents=True, exist_ok=True)
@@ -437,8 +437,47 @@ def test_D061_whisper_after_class_only_with_groq_consent_and_key(semester, monke
     assert len(spawned) == 1 and app.engine_status()["whisper"] == "off"
 
 
+def test_WHISPER_EMERGENCY_001_whisper_only_when_google_cannot_run(semester, monkeypatch):
+    """User 2026-11-26: "whisper 비상용으로만 돌리게 바꿔줘" — Google started (or already has a job) → no Whisper;
+    Google refused here, or its job failed later → Whisper."""
+    from lecturehub.transcription import groq
+    from lecturehub.ui import backend as backend_module
+
+    app = Backend(clock=tuesday, fake_engine=True)
+    spawned = []
+    monkeypatch.setattr(backend_module, "spawn", lambda args, **kw: spawned.append(args) or _Done())
+    consent = semester / "_lecturehub" / "consent.json"
+    consent.parent.mkdir(parents=True, exist_ok=True)
+    both = {"도시계": {"granted_by": "user_app_dialog", "authority": "confirmed_by_user"}}
+    consent.write_text(json.dumps({"gemini_transcribe": both, "whisper_groq": both}, ensure_ascii=False),
+                       encoding="utf-8")
+    monkeypatch.setattr(groq, "load_api_key", lambda: "gsk_SYNTHETIC")
+    answers = iter([{"ok": True}, {"ok": False, "reason": "이미 전사 작업이 있습니다(running)", "job": "J"},
+                    {"ok": False, "reason": "키가 없습니다"}])
+    fallbacks = []
+    monkeypatch.setattr(app, "transcription_start",
+                        lambda *a, fallback=None, **k: fallbacks.append(fallback) or next(answers))
+    app._maybe_auto_transcribe({"state": "linked", "master": "a.m4a", "course": "도시계"})  # Google runs
+    app._maybe_auto_transcribe({"state": "linked", "master": "b.m4a", "course": "도시계"})  # a Google job exists
+    assert spawned == [] and fallbacks[0]["master"] == "a.m4a"
+    app._maybe_auto_transcribe({"state": "linked", "master": "c.m4a", "course": "도시계"})  # Google refused
+    assert [a[a.index("run") + 1] for a in spawned] == ["c.m4a"]
+
+    # the Google job of a.m4a fails afterwards (402 credits): the watcher starts Whisper for it
+    jobs = semester / "_lecturehub" / "jobs" / "J1"
+    jobs.mkdir(parents=True)
+    master = semester / "a.m4a"
+    (jobs / "state.json").write_text(json.dumps({"job_id": "J1", "audio": str(master.resolve()), "state": "failed",
+                                                 "created_at": 10_000_000}), encoding="utf-8")
+    app._watch_transcription(_Done(), 9_000, str(master), {"state": "linked", "master": "a.m4a", "course": "도시계"})
+    assert [a[a.index("run") + 1] for a in spawned] == ["c.m4a", "a.m4a"]
+
+
 class _Done:
     def wait(self):
+        return 0
+
+    def poll(self):
         return 0
 
 
@@ -520,7 +559,7 @@ def test_S2_pending_confirmation_links_then_transcribes_when_consented(semester,
                                                          "course": args[4], "master": "m.m4a"})
     started = []
     monkeypatch.setattr(app, "auto_transcription_allowed", lambda course: course == "구조역학")
-    monkeypatch.setattr(app, "transcription_start", lambda *a: started.append(a) or {"ok": True})
+    monkeypatch.setattr(app, "transcription_start", lambda *a, **_: started.append(a) or {"ok": True})
     assert app.confirm_pending("ingest", "구조역학")["ok"] and started == [(False, "m.m4a", "구조역학")]
     assert app.state()["link"]["lecture_id"] == "L" and app.state()["library_version"] == 1
 
@@ -704,7 +743,7 @@ def test_recordings_under_a_minute_are_never_auto_sent(semester, monkeypatch, tm
     app = Backend(clock=tuesday, fake_engine=True)
     started = []
     monkeypatch.setattr(app, "auto_transcription_allowed", lambda course: True)
-    monkeypatch.setattr(app, "transcription_start", lambda consent, master, course: started.append(master) or {"ok": True})
+    monkeypatch.setattr(app, "transcription_start", lambda consent, master, course, **_: started.append(master) or {"ok": True})
     app._maybe_auto_transcribe({"state": "linked", "master": str(short / "m.mp3"), "course": "구조역학"})
     app._maybe_auto_transcribe({"state": "linked", "master": str(long_ / "m.mp3"), "course": "구조역학"})
     assert started == [str(long_ / "m.mp3")]
@@ -1367,7 +1406,7 @@ def test_IMPORT_011_an_imported_recording_is_sent_by_itself_only_as_the_lectures
     """P-024: consent decides, a class that is already covered is not sent twice, nothing new next to a recording."""
     app = Backend(clock=tuesday, fake_engine=True)
     started = []
-    monkeypatch.setattr(app, "transcription_start", lambda consent, master=None, course=None: started.append(
+    monkeypatch.setattr(app, "transcription_start", lambda consent, master=None, course=None, **_: started.append(
         (consent, master, course)) or {"ok": True})
     (semester / "_lecturehub" / "consent.json").write_text(json.dumps({"gemini_transcribe": {
         "구조역학": {"granted_by": "user_app_dialog", "authority": "confirmed_by_user"}}}, ensure_ascii=False), encoding="utf-8")

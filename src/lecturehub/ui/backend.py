@@ -2325,7 +2325,9 @@ class Backend:
         return sorted(found, key=lambda s: s.get("created_at") or 0, reverse=True)
 
     def transcription_start(self, consent: bool, master: str | None = None, course: str | None = None,
-                            language: str | None = None, again: bool = False) -> dict:
+                            language: str | None = None, again: bool = False, fallback: dict | None = None) -> dict:
+        """``fallback``: an automatic start passes the recording's link; when this Google job fails, Whisper is
+        started for it (Whisper is the emergency engine only, user 2026-11-26)."""
         from lecturehub.transcription.consent import NOTICES, ConsentStore
 
         info = self.transcription_check(master, course)
@@ -2368,11 +2370,12 @@ class Backend:
         handle.close()
         self._set(transcription={"state": "running", "log": str(log), "pid": process.pid,
                                  "started_at": started_at, "master": info["master"], "job": None})
-        threading.Thread(target=self._watch_transcription, args=(process, started_at, info["master"]),
+        threading.Thread(target=self._watch_transcription, args=(process, started_at, info["master"], fallback),
                          daemon=True).start()
         return {"ok": True, "log": str(log)}
 
-    def _watch_transcription(self, process: subprocess.Popen, started_at: float, master: str) -> None:
+    def _watch_transcription(self, process: subprocess.Popen, started_at: float, master: str,
+                             fallback: dict | None = None) -> None:
         from lecturehub.transcription.job import level1
 
         jobs = self.root / "_lecturehub" / "jobs"
@@ -2397,6 +2400,8 @@ class Backend:
                 self._set(transcription=current)
                 if state and state.get("state") in ("done", "qa_warning"):
                     self._register_finished_jobs()  # S2: the lecture screen shows it as the transcript in use
+                elif fallback is not None and (not state or state.get("state") == "failed"):
+                    self._maybe_auto_whisper(fallback)  # Google failed (e.g. 402 credits, a bad key): Whisper instead
                 return
             time.sleep(1.0)
 
@@ -2460,13 +2465,20 @@ class Backend:
                 self._maybe_auto_transcribe(link)
 
     def _maybe_auto_transcribe(self, link: dict) -> None:
-        if (link.get("state") == "linked" and link.get("master") and not _too_short(link["master"])
-                and self.auto_transcription_allowed(link.get("course", ""))):
-            result = self.transcription_start(False, link["master"], link["course"])
+        """Google after class; Whisper only as the emergency engine (user 2026-11-26: "whisper 비상용으로만"):
+        when Google cannot start here (no consent, no key, refused) or its job fails (``_watch_transcription``).
+        A recording that already has a Google job (a live one during recording, or an earlier run) gets no Whisper."""
+        if not (link.get("state") == "linked" and link.get("master") and not _too_short(link["master"])):
+            return
+        google = False
+        if self.auto_transcription_allowed(link.get("course", "")):
+            result = self.transcription_start(False, link["master"], link["course"], fallback=link)
             if result.get("ok"):
                 with self._lock:
                     (self._state.get("transcription") or {})["auto"] = True
-        self._maybe_auto_whisper(link)
+            google = bool(result.get("ok") or result.get("job"))  # "job": it already has a Google job
+        if not google:
+            self._maybe_auto_whisper(link)
 
     def whisper_allowed(self, course: str) -> bool:
         """D-061: Whisper runs on Groq, so it needs its own per-course consent and the user's Groq key."""
@@ -2484,7 +2496,8 @@ class Backend:
         return True
 
     def _maybe_auto_whisper(self, link: dict) -> None:
-        """The reference engine after class (§8.3, R1): quiet, low priority, independent of the Google job.
+        """The emergency engine (user 2026-11-26; it was the reference engine after every class, §8.3 R1): quiet,
+        low priority, started only when Google could not run for this recording.
         The CLI itself refuses a recording that already has a Whisper job and waits out a running recording."""
         if not (link.get("state") == "linked" and link.get("master") and not _too_short(link["master"])
                 and self.whisper_allowed(link.get("course", ""))):
@@ -2505,17 +2518,22 @@ class Backend:
         if link.get("other_recordings") or link.get("transcripts"):
             return {"started": [], "why": "이 회차에는 이미 녹음이나 전사가 있어 자동으로 보내지 않았습니다"}
         started = []
+        link = {"state": "linked", "master": master, "course": course}
+        google_later = False
         if self.recording:  # Google is not started next to a running recording; Whisper (remote) may be (D-063)
             why = "녹음 중이라 Google 전사는 시작하지 않았습니다"
+            google_later = True  # [실행] after the recording sends it to Google: no emergency
         elif not self.auto_transcription_allowed(course):
             why = "이 과목은 아직 전사 동의가 없습니다"
         else:
-            result = self.transcription_start(False, master, course)
+            result = self.transcription_start(False, master, course, fallback=link)
             why = "" if result.get("ok") else result.get("reason", "")
             if result.get("ok"):
                 started.append("google")
-        if self.whisper_allowed(course):
-            self._maybe_auto_whisper({"state": "linked", "master": master, "course": course})
+            google_later = bool(result.get("job"))
+        # Whisper only in an emergency (user 2026-11-26): Google could not start and will not run later
+        if not started and not google_later and self.whisper_allowed(course):
+            self._maybe_auto_whisper(link)
             started.append("whisper")
         return {"started": started, "why": why}
 
