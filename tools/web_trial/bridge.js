@@ -278,7 +278,7 @@
     return v;
   }
 
-  // ---- 그스룸 (study room) booking: the same screen; booking/return/cancel run as a short fake job
+  // ---- study-room booking (owner edition only; the public screens never call these): booking/return/cancel run as a short fake job
   const room = { active: [], past: [], log: [], job: { state: "idle" }, updated_at: null, n: 0 };
   const two = (n) => String(n).padStart(2, "0");
   function roomView() {

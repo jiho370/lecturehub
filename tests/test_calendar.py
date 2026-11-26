@@ -107,6 +107,14 @@ def test_month_view_and_next_exam_d_day(library):
     assert [e["d_day"] for e in view["upcoming"]] == [3, 21]
 
 
+def test_month_view_leaves_out_candidates_whose_day_has_passed(library):
+    # user 2026-11-26: "마감 지난 것들은 그냥 안 보이게 사라지라고. 어차피 지났는데 뭐 어쩔 건데"
+    cal.add(library, kind="assignment", title="지난 보고서(합성)", day="2026-10-11", course_id="gj", status="candidate")
+    cal.add(library, kind="exam", title="오늘 퀴즈(합성)", day="2026-10-20", course_id="gj", status="candidate")
+    view = cal.month_view(library, 2026, 10, date(2026, 10, 20))
+    assert [c["title"] for c in view["candidates"]] == ["오늘 퀴즈(합성)"]
+
+
 @pytest.mark.parametrize("text", [
     "이 회사의 결산일은 12월 31일이야. 12월 31일에 마감은 해야 되잖아.",  # accounting content, not a deadline
     "사업 보고서는 1월 1일부터 12월 31일까지를 보여줘요.",

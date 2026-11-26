@@ -186,10 +186,34 @@ def test_no_consent_sends_nothing(library, tmp_path):
     assert ai.prompts == [] and result["skipped"] and result["read"] == 0
 
 
-def test_what_the_calendar_already_has_is_not_added_or_announced(library, tmp_path):
-    cal.add(library, kind="closure", title="구조역학 휴강", day="2026-10-30", course_id="sr")
+def test_what_the_calendar_already_has_is_not_added_but_announced_as_already_there(library, tmp_path):
+    # user 2026-11-26: "이미 달력에 있는지도 점검하고 있으면 이미 반영돼 있다고 언급하기"
+    existing = cal.add(library, kind="closure", title="구조역학 휴강", day="2026-10-30", course_id="sr")
     result = cn.scan(library, tmp_path, date(2026, 10, 20), client=cn.FakeText(closure_answer()), consent=Consent())
-    assert result["added"] == [] and cal.candidates(library) == []
+    assert cal.candidates(library) == []
+    [item] = result["added"]
+    assert item["event_id"] is None and item["already"] == {"id": existing, "title": "구조역학 휴강", "status": "confirmed"}
+
+
+def test_ai_saying_already_known_matches_another_kind_on_that_day(library, tmp_path):
+    existing = cal.add(library, kind="other", title="학회", day="2026-10-30", course_id="sr")
+    answer = closure_answer()
+    answer["notices"][0]["already_known"] = True
+    result = cn.scan(library, tmp_path, date(2026, 10, 20), client=cn.FakeText(answer), consent=Consent())
+    assert cal.candidates(library) == [] and result["added"][0]["already"]["id"] == existing
+
+
+def test_candidate_title_is_a_short_name_not_a_sentence(library, tmp_path):
+    # user 2026-11-26: "문장이 아니라 간단하게 해야지 환경공 발표 이런식으로 ~하기로 한다 이게 뭐임"
+    answer = closure_answer()
+    answer["notices"][0]["title"] = "휴강(학회)"
+    cn.scan(library, tmp_path, date(2026, 10, 20), client=cn.FakeText(answer), consent=Consent())
+    [candidate] = cal.candidates(library)
+    assert candidate["title"] == "휴강(학회)" and "학회로 10/30(금) 휴강" in candidate["note"]
+    assert cn.short_title({"title": "10월 30일 수업은 학회로 휴강한다"}, "휴강") == "휴강"
+    assert cn.short_title({"title": "발표 진행 예정임"}, "일정") == "일정"
+    assert cn.short_title({}, "시험") == "시험"
+    assert cn.short_title({"title": "보고서 서론 제출"}, "과제 마감") == "보고서 서론 제출"
 
 
 def test_past_notice_is_kept_but_not_announced_and_far_or_earlier_dates_have_no_day(library, tmp_path):

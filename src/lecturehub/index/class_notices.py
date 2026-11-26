@@ -105,6 +105,7 @@ SCHEMA = {
             "date_text": {"type": "STRING", "description": "the wording used in class, e.g. 그 주 금요일"},
             "date_reasoning": {"type": "STRING"},
             "summary": {"type": "STRING"},
+            "title": {"type": "STRING", "description": "short calendar name without the course, e.g. 발표, 중간고사, 보고서 서론 제출"},
             "speaker": {"type": "STRING", "enum": ["professor", "ta", "student", "unknown"]},
             "certainty": {"type": "STRING", "enum": ["high", "medium", "low"]},
             "stt_note": {"type": "STRING"},
@@ -113,7 +114,7 @@ SCHEMA = {
                 "line": {"type": "STRING", "description": "line id as given, e.g. E1#12"},
                 "text": {"type": "STRING"}}, "required": ["line", "text"]}},
         },
-        "required": ["kind", "date", "date_precision", "date_text", "date_reasoning", "summary", "speaker",
+        "required": ["kind", "date", "date_precision", "date_text", "date_reasoning", "summary", "title", "speaker",
                      "certainty", "stt_note", "already_known", "quotes"],
     }}},
     "required": ["notices"],
@@ -590,6 +591,7 @@ def build_prompt(course: str, lecture_day: date, today: date, context: dict, tra
 8. 확신도: 말이 분명하고 날짜가 확실하면 high, 해석이 필요하면 medium, 추측이 크면 low.
 9. 달력에 이미 같은 일정이 있으면 already_known을 true로 한다.
 10. summary는 한국어 한 문장(40자 안팎)으로, 무엇이 언제 어떻게 되는지 쓴다. 누가 말했는지는 speaker에 적는다(교수 professor, 조교 ta).
+11. title은 달력에 그대로 보일 **짧은 이름**(2~12자, 문장 아님, 과목 이름 빼고)이다. 예: 발표, 중간고사, 휴강, 퀴즈, 보고서 서론 제출, 종강. "~한다", "~함", "~예정" 같은 서술어로 끝내지 않는다.
 공지가 없으면 notices를 빈 배열로 둔다.
 
 {transcripts_text}
@@ -661,10 +663,32 @@ def _parse_day(value, lecture_day: date) -> date | None:
     return day if lecture_day <= day <= lecture_day + timedelta(days=HORIZON_DAYS) else None
 
 
+def on_calendar(connection: sqlite3.Connection, course_id: str, kind: str, day: date, *,
+                any_kind: bool = False) -> dict | None:
+    """The calendar entry this notice already is (confirmed first), or None. ``any_kind``: when the AI said the
+    calendar already has it, an entry of another kind on that day of that course counts too (a 발표 kept as 과제)."""
+    sql = ("SELECT id, title, status FROM CalendarEvent WHERE (course_id=? OR course_id IS NULL) AND date=? "
+           "AND status IN ('confirmed','candidate') {} ORDER BY status='confirmed' DESC, created_at LIMIT 1")
+    row = connection.execute(sql.format("AND kind=?"), (course_id, day.isoformat(), kind)).fetchone()
+    if row is None and any_kind:
+        row = connection.execute(sql.format(""), (course_id, day.isoformat())).fetchone()
+    return {"id": row[0], "title": row[1], "status": row[2]} if row else None
+
+
 def _already(connection: sqlite3.Connection, course_id: str, kind: str, day: date) -> bool:
-    return connection.execute(
-        "SELECT 1 FROM CalendarEvent WHERE (course_id=? OR course_id IS NULL) AND kind=? AND date=? "
-        "AND status IN ('confirmed','candidate')", (course_id, kind, day.isoformat())).fetchone() is not None
+    return on_calendar(connection, course_id, kind, day) is not None
+
+
+_SENTENCE_END = ("다", "함", "임", "됨", "음", "요", ".")
+
+
+def short_title(notice: dict, label: str) -> str:
+    """The calendar name: the AI's short ``title`` ("발표", "보고서 서론 제출"), never a sentence (user 2026-11-26:
+    "문장이 아니라 간단하게 ... ~하기로 한다 이게 뭐임"). A missing, long or sentence-like one falls back to the kind's label."""
+    text = " ".join(str(notice.get("title") or "").split()).strip(" .·-—")
+    if not text or len(text) > 20 or text.endswith(_SENTENCE_END):
+        return label
+    return text
 
 
 def _store(connection, root: Path, lecture: dict, notice: dict, quotes: list[dict], model: str, today: date) -> dict | None:
@@ -684,14 +708,18 @@ def _store(connection, root: Path, lecture: dict, notice: dict, quotes: list[dic
         return None
     if any(item["key"] == ref for item in inbox(root)):
         return None
-    event_id = None
+    title = short_title(notice, label)
+    event_id, already = None, None
     if day is not None:
-        if _already(connection, lecture["course_id"], cal_kind, day):
-            return None  # the calendar already has it (typed by the user, eTL or an earlier reading)
+        # the calendar already has it (typed by the user, eTL or an earlier reading): no second candidate, but the
+        # banner says so (user 2026-11-26: "이미 달력에 있으면 이미 반영돼 있다고 언급하기")
+        already = on_calendar(connection, lecture["course_id"], cal_kind, day,
+                              any_kind=bool(notice.get("already_known")))
+    if day is not None and already is None:
         note = (f"AI가 {lecture['date'][5:].replace('-', '/')} 수업 전사본 전체를 읽고 찾은 후보(확인 필요) · "
-                f"확신도 {CERTAINTY[certainty]}" + (f" · 잘못 들렸을 수 있음: {stt_note}" if stt_note else ""))
+                f"확신도 {CERTAINTY[certainty]}" + (f" · 잘못 들렸을 수 있음: {stt_note}" if stt_note else "") + f" · {summary}")
         event_id = calendar_events.add(
-            connection, kind=cal_kind, title=summary[:60] or label, day=day.isoformat(), course_id=lecture["course_id"],
+            connection, kind=cal_kind, title=title, day=day.isoformat(), course_id=lecture["course_id"],
             note=note, source="transcript", source_ref=ref, status="candidate",
             date_precision="day" if precision == "day" else "approx",
             date_text=str(notice.get("date_text") or "")[:60] or None)
@@ -714,7 +742,8 @@ def _store(connection, root: Path, lecture: dict, notice: dict, quotes: list[dic
             "lecture_id": lecture["id"], "lecture_date": lecture["date"], "kind": kind, "kind_label": label,
             "date": day.isoformat() if day else None, "date_precision": precision,
             "date_text": notice.get("date_text") or "", "date_reasoning": notice.get("date_reasoning") or "",
-            "summary": summary, "certainty": certainty, "certainty_label": CERTAINTY[certainty], "stt_note": stt_note,
+            "summary": summary, "title": title, "already": already,
+            "certainty": certainty, "certainty_label": CERTAINTY[certainty], "stt_note": stt_note,
             "speaker": notice.get("speaker") or "unknown", "quote": first["quote"], "engine": first["engine"],
             "at_ms": first["at_ms"], "engines": sorted({q["engine"] for q in quotes}), "model": model,
             "found_at": _now_ms(), "seen": bool(day and day < today)}
@@ -841,7 +870,10 @@ def scan(connection: sqlite3.Connection, root: Path, today: date, *, client=None
     stopped = dirty = recording = False
     halted = None
     for lecture in lectures_to_read(connection, today, days_back, lecture_ids):
-        transcripts = [t for t in lecture_index._transcripts(connection, lecture["id"]) if t["segments"]]
+        # best engine first (Google before Whisper): the reader quotes mostly from E1, and ids put a Whisper that
+        # finished first ahead (user 2026-11-26: "왜 공지 whisper 기준으로 함?")
+        transcripts = sorted((t for t in lecture_index._transcripts(connection, lecture["id"]) if t["segments"]),
+                             key=lambda t: (lecture_index.ENGINE_RANK.get(t["engine"], 9), -t["segments"]))
         if not transcripts:
             continue
         mark = _fingerprint(transcripts)

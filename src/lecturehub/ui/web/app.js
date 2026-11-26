@@ -1029,10 +1029,21 @@
     el.innerHTML = todayCard(r);
     setHomeMode(ui.homeMode);
     renderLive();
-    if (r && r.ok && r.date !== ui.info.today_iso) {
-      ui.info.today_iso = r.date; ui.home = null;
-      renderHome();
-    }
+    if (r && r.ok && r.date !== ui.info.today_iso) await dayRollover();
+  }
+  /* The start info (header date "11/25(수)", today's classes, today_iso) was read once at launch, so a window left open
+     past midnight kept showing yesterday (user 2026-11-26: "오늘 목요일인데 왜 수요일로"). Re-read it when the day changes. */
+  function localIso() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  async function dayRollover() {
+    if (!ui.info || !ui.info.today_iso || localIso() === ui.info.today_iso) return;
+    const fresh = await api.init();
+    ui.info.date = fresh.date; ui.info.today = fresh.today; ui.info.today_iso = fresh.today_iso;
+    ui.home = null;
+    renderAll();
+    if (ui.view === "home") renderHome();
   }
   // Home, left side: one view at a time — the week (default on every start) or the month (user 2026-11-26).
   function setHomeMode(mode) {
@@ -1188,10 +1199,11 @@
     const when = (n) => n.date ? `${dayText(n.date)}${n.date_precision === "approx" ? " 쯤" : ""}` : "날짜 미정";
     const who = { professor: "교수", ta: "조교", student: "학생" };
     const rows = list.slice(0, 4).map((n) => `<div class="nb-item" data-key="${esc(n.key)}">
-      <div class="nb-head"><b>${esc(n.course)} · ${esc(when(n))} · ${esc(n.kind_label)}</b><span class="nb-cert c-${esc(n.certainty)}">확신도 ${esc(n.certainty_label)}</span></div>
+      <div class="nb-head"><b>${esc(n.course)} ${esc(n.title || n.kind_label)} · ${esc(when(n))}</b><span class="nb-cert c-${esc(n.certainty)}">확신도 ${esc(n.certainty_label)}</span></div>
       <div class="nb-sum">${esc(n.summary)}</div>
       <div class="nb-quote">“${esc(n.quote)}”<small>${n.source === "etl" ? `eTL 공지 '${esc(n.ann_title || "")}' · ${esc(mdText((n.posted || n.lecture_date || "").slice(0, 10)))} 올림 · ChatGPT(Codex)가 읽음`
         : `${esc(mdText(n.lecture_date))} 수업 ${Math.floor((n.at_ms || 0) / 60000)}분경 · ${esc(n.engines.join("·"))}${who[n.speaker] ? " · " + who[n.speaker] : ""}`}</small></div>
+      ${n.already ? `<div class="nb-why nb-already">이미 달력에 반영돼 있음 — ${n.already.status === "confirmed" ? "확정" : "후보"} '${esc(n.already.title)}'</div>` : ""}
       ${n.date_reasoning ? `<div class="nb-why">날짜 근거: ${esc(n.date_reasoning)}</div>` : ""}
       ${n.stt_note ? `<div class="nb-why">잘못 들렸을 수 있음(추정): ${esc(n.stt_note)}</div>` : ""}
       <div class="nb-acts">${n.event_id && n.date ? `<button class="mini" data-nb-cal="${esc(n.key)}">달력에서 확정·무시</button>` : ""}<button class="mini" data-nb-seen="${esc(n.key)}">확인함</button></div></div>`).join("");
@@ -4304,6 +4316,7 @@
     setInterval(single(loadNotices), 120000);  // the inbox file; app.py also pushes a new notice right away
     setInterval(single(loadEngines), 60000);  // use by running jobs, Pacific-midnight refill, Groq's rolling hour/day
     setInterval(single(refreshTodayCard), 60000);  // D-079: keep today's card current across midnight and due times
+    setInterval(single(dayRollover), 60000);  // the header date and today's classes too, on every screen (user 2026-11-26)
     setInterval(single(async () => { if (ui.view === "lecture") await renderLectureEngines(); }), 20000);  // job progress on the open lecture
     setInterval(single(async () => { await refreshCourse(); }), 60000);  // the class moves on
     await syncSelection();

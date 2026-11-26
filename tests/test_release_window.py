@@ -597,6 +597,18 @@ function miniPage() {  // mini.html: its inline script against a stub page and a
     out.empty = made.dayList({ ok: true, date: view.date, classes: [], dues: [], exams: [] });
     out.error = made.dayList({ ok: false });
     ui.view = "live"; el.innerHTML = "untouched"; await made.refreshTodayCard(); out.live = el.innerHTML;
+  } else if (mode === "dayrollover") {
+    const body = cut(src, '  // D-081: week and day', "  async function renderHome() {");
+    const ui = { view: "home", home: { year: 2000, month: 1 }, info: { date: "1/1(토)", today_iso: "2000-01-01", today: [{ folder: "어제과목", start: "09:00" }], courses: ["keep"] } };
+    const calls = [];
+    const api = { init: async () => { calls.push("init"); return { date: "새 날짜", today_iso: "fresh", today: [{ folder: "오늘과목", start: "13:00" }], courses: ["replaced"] }; } };
+    const made = new Function("esc", "hhmm", "ui", "api", "$", "renderHome", "store", "renderAll", body + "\nreturn { dayRollover, localIso };")(
+      esc, () => "", ui, api, () => null, () => calls.push("renderHome"), { get: (k, d) => d }, () => calls.push("renderAll"));
+    await made.dayRollover();
+    out.after = { date: ui.info.date, today_iso: ui.info.today_iso, today: ui.info.today, courses: ui.info.courses, home: ui.home };
+    ui.info.today_iso = made.localIso(); calls.push("|");
+    await made.dayRollover();
+    out.calls = calls;
   } else if (mode === "weekcard") {
     const view = JSON.parse(fs.readFileSync(process.argv[5], "utf8")), calls = [], saved = {}, classes = {};
     const el = { innerHTML: "", classList: { toggle: (k, v) => { classes[k] = v; } } };
@@ -1316,6 +1328,16 @@ def test_UI_REMIND_002_today_card_shows_muted_courses_makeups_and_escapes_text(t
     assert "불러오지 못했습니다" in seen["error"] and seen["live"] == "untouched"
     page = (WEB / "index.html").read_text(encoding="utf-8")
     assert page.index('id="todayCard"') < page.index('id="homeTitle"')
+
+
+@needs_node
+def test_UI_DAY_001_window_left_open_past_midnight_rereads_date_and_today_classes(tmp_path):
+    """User 2026-11-26: the app opened Wednesday night still said 수요일 on Thursday. A new local day re-reads the
+    header date, today's classes and today_iso (only those), re-renders, and does nothing while the day is the same."""
+    seen = _node(tmp_path, "dayrollover")
+    assert seen["after"] == {"date": "새 날짜", "today_iso": "fresh", "today": [{"folder": "오늘과목", "start": "13:00"}],
+                             "courses": ["keep"], "home": None}
+    assert seen["calls"] == ["init", "renderAll", "renderHome", "|"]
 
 
 @needs_node

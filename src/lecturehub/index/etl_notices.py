@@ -136,6 +136,7 @@ def build_prompt(course: str, posted: date, today: date, context: dict, text: st
 7. 확신도: 날짜와 내용이 분명하면 high, 해석이 필요하면 medium, 추측이 크면 low.
 8. 달력에 이미 같은 일정이 있으면 already_known을 true로 한다.
 9. summary는 한국어 한 문장(40자 안팎)으로 무엇이 언제 어떻게 되는지 쓴다. 글쓴이는 speaker에 적는다(교수 professor, 조교 ta, 모르면 unknown).
+10. title은 달력에 그대로 보일 **짧은 이름**(2~12자, 문장 아님, 과목 이름 빼고)이다. 예: 발표, 중간고사, 휴강, 퀴즈, 보고서 제출, 특강. "~한다", "~함", "~예정" 같은 서술어로 끝내지 않는다.
 일정이 없으면 notices를 빈 배열로 둔다.
 
 {text}
@@ -181,14 +182,16 @@ def _store(connection, root: Path, ann: dict, course_id: str, notice: dict, quot
     if any(item["key"] == ref for item in cn.inbox(root)):
         return None
     title = " ".join(str(ann.get("title") or "").split())[:80]
-    event_id = None
+    name = cn.short_title(notice, label)
+    event_id, already = None, None
     if day is not None:
-        if cn._already(connection, course_id, cal_kind, day):
-            return None  # the calendar already has it (eTL assignment, typed by the user, a spoken notice)
+        # already on the calendar (eTL assignment, typed by the user, a spoken notice): the banner says so instead
+        already = cn.on_calendar(connection, course_id, cal_kind, day, any_kind=bool(notice.get("already_known")))
+    if day is not None and already is None:
         note = (f"AI가 eTL 공지 '{title}'({posted.month}/{posted.day} 올림)를 읽고 찾은 후보(확인 필요) · "
-                f"확신도 {cn.CERTAINTY[certainty]}")
+                f"확신도 {cn.CERTAINTY[certainty]} · {summary}")
         event_id = calendar_events.add(
-            connection, kind=cal_kind, title=summary[:60] or label, day=day.isoformat(), course_id=course_id,
+            connection, kind=cal_kind, title=name, day=day.isoformat(), course_id=course_id,
             note=note, source="etl", source_ref=ref, status="candidate",
             date_precision="day" if precision == "day" else "approx",
             date_text=str(notice.get("date_text") or "")[:60] or None)
@@ -211,7 +214,8 @@ def _store(connection, root: Path, ann: dict, course_id: str, notice: dict, quot
             "lecture_id": None, "lecture_date": posted.isoformat(), "kind": kind, "kind_label": label,
             "date": day.isoformat() if day else None, "date_precision": precision,
             "date_text": notice.get("date_text") or "", "date_reasoning": notice.get("date_reasoning") or "",
-            "summary": summary, "certainty": certainty, "certainty_label": cn.CERTAINTY[certainty], "stt_note": "",
+            "summary": summary, "title": name, "already": already,
+            "certainty": certainty, "certainty_label": cn.CERTAINTY[certainty], "stt_note": "",
             "speaker": notice.get("speaker") or "unknown", "quote": quotes[0]["quote"], "engine": SOURCE_LABEL,
             "at_ms": 0, "engines": [SOURCE_LABEL], "model": model, "found_at": cn._now_ms(),
             "seen": bool(day and day < today)}

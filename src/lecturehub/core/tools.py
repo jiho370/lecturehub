@@ -92,6 +92,11 @@ def status(check_login: bool = False) -> dict[str, dict]:
     for name, meta in TOOLS.items():
         path = find(name)
         row = {**meta, "found": bool(path), "path": path}
+        if name == "aside":  # the public edition has no room booking (D-087): do not name it there
+            from . import edition
+
+            if not edition.has("gsr"):
+                row["needed_for"] = "Clova 가져오기(브라우저 자동화)"
         if check_login and name == "codex" and path:
             row["signed_in"] = codex_signed_in(path)
         out[name] = row

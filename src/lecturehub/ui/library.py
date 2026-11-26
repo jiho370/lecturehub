@@ -1268,7 +1268,8 @@ class Library:
         for item in items:
             item["status"] = states.get(item.get("event_id"), "none")
             item["past"] = bool(item.get("date") and item["date"] < today.isoformat())
-        unseen = [i for i in items if not i.get("seen")]
+        # a notice whose day has passed is not shown any more (user 2026-11-26: "마감 지난 것들은 그냥 안 보이게 사라지라고")
+        unseen = [i for i in items if not i.get("seen") and not i["past"]]
         return {"unseen": sorted(unseen, key=lambda i: (i.get("date") or "9999", i["found_at"])),
                 "recent": sorted(items, key=lambda i: -i["found_at"])[:30]}
 

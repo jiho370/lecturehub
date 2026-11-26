@@ -369,5 +369,7 @@ def month_view(connection: sqlite3.Connection, year: int, month: int, today: dat
     for item in upcoming:
         item["d_day"] = (date.fromisoformat(item["date"]) - today).days
     return {"year": year, "month": month, "events": events(connection, first.isoformat(), last.isoformat()),
-            "exceptions": closures, "upcoming": upcoming, "candidates": candidates(connection),
+            "exceptions": closures, "upcoming": upcoming,
+            # a candidate whose day has passed is left out (user 2026-11-26: "마감 지난 것들은 그냥 안 보이게 사라지라고")
+            "candidates": [c for c in candidates(connection) if c["date"] >= today.isoformat()],
             "next_exam": next_exam(connection, today), "today": today.isoformat()}

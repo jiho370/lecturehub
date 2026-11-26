@@ -133,3 +133,13 @@ def test_PUBLIC_GSR_004_full_edition_retains_feature_and_service(monkeypatch, tm
     assert edition.has("gsr") and settings.labs()["gsr"]
     assert Api._room_off() is None
     assert object.__new__(Backend)._gsr_prefs_off() is None
+
+
+def test_D087_tool_list_does_not_name_room_booking_in_the_public_edition(monkeypatch):
+    """The first-run tool list said Aside is for "그스룸 예약" in the edition that has no room booking (found in the
+    look-around page built from the 1.1.0 public tree, 2026-11-26)."""
+    from lecturehub.core import tools
+
+    assert "그스룸" not in tools.status()["aside"]["needed_for"]
+    monkeypatch.setenv("LECTUREHUB_EDITION", "full")
+    assert "그스룸" in tools.status()["aside"]["needed_for"]
